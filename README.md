@@ -1,0 +1,25 @@
+# プロジェクト名
+
+[HLSearch ハーディ・リトルウッドの第２予想の反例の探索プログラム]
+
+ # ![Demo](https://via.placeholder.com/800x400.png?text=App+Screenshot+or+GIF)
+#*※ スクリーンショットや動いているGIF画像をここに置くと一目で伝わります*
+
+## 主な機能
+
+- **機能1**: プログラムを起動すると、演算結果をprint文で画面に出力する。
+- **機能2**: 2から1579の素数の配列の行を動かして全部の列が０になる個数を数える。
+- **機能3**: 素数が素数の間隔で並んだ横3159, 縦249の配列である。
+
+## 動作環境・必須ツール
+
+- **Python**: 3.10 以上
+- その他の依存ライブラリ（`requirements.txt` に記載）
+
+## セットアップ & 実行方法
+python HLSearch.py
+
+### 1. リポジトリのクローン
+```bash
+git clone [https://github.com/Hajime-Ooshiro/HLSearch.git](https://github.com/Hajime-Ooshiro/HLSearch.git)
+cd your-repo-name
