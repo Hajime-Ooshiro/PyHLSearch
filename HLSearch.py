@@ -1,7 +1,30 @@
 # HLSearch.py (numpy高速化版)
 import datetime
+import logging
 import numpy as np
 from pathlib import Path
+
+# --- logging設定 ---
+LOG_DIR = Path(__file__).resolve().parent
+LOG_FILE = LOG_DIR / f"HLFull_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
+)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(_formatter)
+
+_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(_formatter)
+
+logger.addHandler(_console_handler)
+logger.addHandler(_file_handler)
 
 COLS = 3159
 IDX = np.arange(1, COLS + 1)  # 元コードの range(1, 3160) に対応
@@ -21,9 +44,6 @@ def shift_array(arr, k):
     return result
 
 def count_zero(arr):
-    # arr = np.asarray(arr)
-    # if arr.ndim != 2:
-    #     raise ValueError("2次元配列を渡してください")
     return int(np.sum(np.all(arr == 0, axis=0)))
 
 # 2,3,5,7,11,13,...,1579 の素数リスト(元コードのA2,A3,...,A1579に対応)
@@ -58,7 +78,7 @@ def calc2(key):
 
     count = count_zero(B)
     if count < LIMIT:
-        print("break key=",key," count=",count)
+        logger.debug("break key=%s count=%d", key, count)
         return
     
     for i in range(PRIMES[1]):
@@ -72,7 +92,7 @@ def calc3(key):
 
     count = count_zero(B)
     if count < LIMIT:
-        print("break key=",key," count=",count)
+        logger.debug("break key=%s count=", count)
         return
     
     for i in range(PRIMES[2]):
@@ -88,7 +108,7 @@ def calc5(key):
 
     count = count_zero(B)
     if count < LIMIT:
-        print("break key=",key," count=",count)
+        logger.debug("break key=%s count=%d", list(key), count)
         return
     
     for i in range(PRIMES[3]):
@@ -107,34 +127,37 @@ def calc7(key):
 
     count = count_zero(B)
     if count < LIMIT:
-        print("break key=",key," count=",count)
+        logger.debug("break key=%s count=%d", list(key), count)
         return
     
     if count > max_count:
         max_count = count
         shifts = [key]
-        print("max_count:", max_count)
-        print("done key=",key," count=",count)
+        logger.info("max_count=%d", max_count)
+        logger.debug("done key=%s count=%d", list(key), count)
         return
     elif count == max_count:
         shifts.append(key)
-        print("done key=",key," count=",count)
+        logger.debug("done key=%s count=%d", list(key), count)
         return
 
     if count < max_count:
-        print("break key=",key," count=",count)
+        logger.debug("break key=%s count=%d", list(key), count)
         return
 
     if count > TARGET:
-        print("break key=",key," count=",count)
+        logger.debug("break key=%s count=%d", list(key), count)
         return
 
 shifts = []
 if __name__ == "__main__":
-    print("HLSearch 開始")
+    logger.info("HLSearch 開始")
     for i in range(PRIMES[0]):
         calc2([i])
 
-    print("該当件数:", len(shifts))
+    logger.info("max_count:%d", max_count)
+    logger.info("該当件数:%d", len(shifts))
+    for shift in shifts:
+        logger.info(shift)
 
-    print("HLSearch 終了")
+    logger.info("HLSearch 終了")
