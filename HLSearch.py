@@ -6,7 +6,7 @@ from pathlib import Path
 
 # --- logging設定 ---
 LOG_DIR = Path(__file__).resolve().parent
-LOG_FILE = LOG_DIR / f"HLFull_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+LOG_FILE = LOG_DIR / f"HLSearch_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -27,7 +27,7 @@ logger.addHandler(_console_handler)
 logger.addHandler(_file_handler)
 
 COLS = 3159
-IDX = np.arange(1, COLS + 1)  # 元コードの range(1, 3160) に対応
+IDX = np.arange(1, COLS + 1)  # range(1, 3160) 
 
 LIMIT = 400
 TARGET = 447
