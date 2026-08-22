@@ -30,15 +30,33 @@ _file_handler = logging.handlers.RotatingFileHandler(
 _file_handler.setLevel(FILE_LOG_LEVEL)
 _file_handler.setFormatter(_formatter)
 
-if not logging.handlers:
+if not logger.handlers:
     logger.addHandler(_console_handler)
     logger.addHandler(_file_handler)
 
 COLS = cfg.COLS
 IDX = np.arange(1, COLS + 1)  # range(1, 3160)
 
+SHIFT_PATH_FILE = cfg.SHIFT_PATH_FILE
+
+
+def clear_shift_path_file():
+    """shift_path.txt を空にする(max_count が更新されたときに呼ぶ)"""
+    with open(SHIFT_PATH_FILE, "w", encoding="utf-8"):
+        pass
+
+
+def append_shift_path_file(shift_path):
+    """shift_path.txt に shift_path を1行追加する"""
+    with open(SHIFT_PATH_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{shift_path}\n")
+
 
 def shift_array(arr, k):
+    """
+        k > 0 の時は右側にシフトする。
+        k < 0 の時は左側にシフトする。
+    """
     n = len(arr)
     if k >= 0:
         if k >= n:
@@ -88,8 +106,16 @@ class SearchState:
         (config.MAX_DEPTH 相当)。
     max_count : int
         探索中に見つかった zero_mask カウントの最大値。実行中に更新される。
-    results : list[list[int]]
-        max_count を達成した shift_path のリスト。max_count が更新されるとクリアされる。
+    results : int
+        max_count を達成した件数。max_count が更新されると1に初期化され、
+        同じ max_count を達成するたびに1ずつ加算される。
+        該当する shift_path 自体は SHIFT_PATH_FILE(shift_path.txt)に
+        書き出される(max_count 更新時にファイルを空にし、count == max_count
+        のたびに1行追加する)。
+    count1 : int
+        進捗表示用
+    count2 : int
+        進捗表示用
     """
 
     def __init__(self, limit, target, max_depth):
@@ -97,8 +123,49 @@ class SearchState:
         self.target = target
         self.max_depth = max_depth
         self.max_count = 0
-        self.results = []
+        self.results = 0
+        self.count1 = 0
+        self.count2 = 0
 
+    def progress(self):
+        """ 進捗表示 """
+        self.count1 += 1
+        if self.count1 % 100000 == 0:
+            self.count1 = 0
+            if self.count2 == 0:
+                print("+---------")
+                self.count2 += 1
+            elif self.count2 == 1:
+                print("-+--------")
+                self.count2 += 1
+            elif self.count2 == 2:
+                print("--+-------")
+                self.count2 += 1
+            elif self.count2 == 3:
+                print("---+------")
+                self.count2 += 1
+            elif self.count2 == 3:
+                print("----+-----")
+                self.count2 += 1
+            elif self.count2 == 4:
+                print("-----+----")
+                self.count2 += 1
+            elif self.count2 == 5:
+                print("------+---")
+                self.count2 += 1
+            elif self.count2 == 6:
+                print("-------+--")
+                self.count2 += 1
+            elif self.count2 == 7:
+                print("--------+-")
+                self.count2 += 1
+            elif self.count2 == 8:
+                print("---------+")
+                self.count2 += 1
+            elif self.count2 == 9:
+                print("----------")
+                self.count2 = 0
+        
 
 def build_base_array(primes):
     """
@@ -139,6 +206,7 @@ def search(shift_path, primes, depth, base_array, zero_mask, state):
         max_count / results をまとめた状態オブジェクト。この1回の探索
         (run_search 呼び出し)の間だけ生存し、再帰全体で共有・更新される。
     """
+    state.progress()
     level = len(shift_path) - 1  # 今回シフトを設定した階層(0-indexed)
     row_nonzero = shift_array(base_array[level], shift_path[level])
     zero_mask = zero_mask & ~row_nonzero
@@ -160,11 +228,13 @@ def search(shift_path, primes, depth, base_array, zero_mask, state):
         if count > state.max_count:
             state.max_count = count
             logger.info("max_count=%d", state.max_count)
-            state.results.clear()
-            state.results.append(shift_path)
+            state.results = 1
+            clear_shift_path_file()
+            append_shift_path_file(shift_path)
             logger.debug("done shift_path=%s count=%d", shift_path, count)
         elif count == state.max_count:
-            state.results.append(shift_path)
+            state.results += 1
+            append_shift_path_file(shift_path)
             logger.debug("done shift_path=%s count=%d", shift_path, count)
         return  # 最深階層に到達
 
@@ -185,7 +255,7 @@ def run_search(primes, depth, limit=None, target=None, max_depth=None):
     Returns
     -------
     SearchState
-        探索完了後の状態(state.results に該当 shift_path のリスト、
+        探索完了後の状態(state.results に max_count を達成した件数、
         state.max_count に達成した最大カウントが入っている)。
     """
     if depth > len(primes):
@@ -214,8 +284,6 @@ if __name__ == "__main__":
     state = run_search(PRIMES, DEPTH)
 
     logger.info("最大値: %d", state.max_count)
-    logger.info("該当件数: %d", len(state.results))
-    for shift_path in state.results:
-        logger.info("shift_path=%s", shift_path)
+    logger.info("該当件数: %d", state.results)
 
     logger.info("HLSearch 終了")

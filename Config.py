@@ -35,6 +35,10 @@ FILE_LOG_LEVEL = logging.INFO
 # ログのフォーマット
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
 
+# max_count を達成した shift_path を書き出すファイル(このファイルと同じ場所)。
+# max_count が更新されるたびに空にし、count == max_count のたびに1行追加する。
+SHIFT_PATH_FILE = LOG_DIR / "shift_path.txt"
+
 
 # ============================================================
 # 探索パラメータ
