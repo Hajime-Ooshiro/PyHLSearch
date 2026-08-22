@@ -1,6 +1,6 @@
 # プロジェクト名
 
-[HLSearch ハーディ・リトルウッドの第２予想の反例の探索プログラム]
+[PyHLSearch ハーディ・リトルウッドの第２予想の反例の探索プログラム]
 
  # ![Demo](https://via.placeholder.com/800x400.png?text=App+Screenshot+or+GIF)
 #*※ スクリーンショットや動いているGIF画像をここに置くと一目で伝わります*
@@ -17,9 +17,33 @@
 - その他の依存ライブラリ（`requirements.txt` に記載）
 
 ## セットアップ & 実行方法
-python HLSearch.py
+python PyHLSearch.py
 
 ### 1. リポジトリのクローン
 ```bash
-git clone [https://github.com/Hajime-Ooshiro/HLSearch.git](https://github.com/Hajime-Ooshiro/HLSearch.git)
+git clone [https://github.com/Hajime-Ooshiro/HLSearch.git](https://github.com/Hajime-Ooshiro/PyHLSearch.git)
 cd your-repo-name
+
+## 変更履歴 (Changelog)
+
+<details>
+<summary><b>v1.0.1</b> (2026-08-23)</summary>
+
+### 追加 (Added)
+- 設定ファイルConfig.pyを追加
+
+### 変更 (Changed)
+- 再帰関数を使うよう変更
+
+### 修正 (Fixed)
+- プロジェクト名をPyHLSearchに修正
+
+</details>
+
+<details>
+<summary><b>v1.0.0</b> (2026-08-21)</summary>
+
+### 追加 (Added)
+- 初版リリース
+
+</details>
