@@ -1,29 +1,21 @@
-# HLSearch.py (numpy高速化版)
+# HLSearch.py
 import logging
 import logging.handlers
 import numpy as np
-from pathlib import Path
 
-# --- logging設定 ---
-LOG_DIR = Path(__file__).resolve().parent
-# ファイル名は固定(HLSearch.log)。サイズが上限を超えたら
-# HLSearch.log.1, HLSearch.log.2, ... にローテーションする。
-LOG_FILE = LOG_DIR / "HLSearch.log"
+import Config as cfg
 
-# 1ファイルあたりの最大サイズ(bytes)。超えたらローテーション。
-LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
-# 保持する世代数(HLSearch.log.1 ~ HLSearch.log.<LOG_BACKUP_COUNT>)
-LOG_BACKUP_COUNT = 100
-
-CONSOLE_LOG_LEVEL = logging.INFO
-FILE_LOG_LEVEL = logging.INFO
+# --- logging設定(設定値はすべて config.py に集約) ---
+LOG_FILE = cfg.LOG_FILE
+LOG_MAX_BYTES = cfg.LOG_MAX_BYTES
+LOG_BACKUP_COUNT = cfg.LOG_BACKUP_COUNT
+CONSOLE_LOG_LEVEL = cfg.CONSOLE_LOG_LEVEL
+FILE_LOG_LEVEL = cfg.FILE_LOG_LEVEL
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-_formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
-)
+_formatter = logging.Formatter(cfg.LOG_FORMAT)
 
 _console_handler = logging.StreamHandler()
 _console_handler.setLevel(CONSOLE_LOG_LEVEL)
@@ -41,49 +33,71 @@ _file_handler.setFormatter(_formatter)
 logger.addHandler(_console_handler)
 logger.addHandler(_file_handler)
 
-COLS = 3159
-IDX = np.arange(1, COLS + 1)  # range(1, 3160) 
-
-LIMIT = 400
-TARGET = 447
+COLS = cfg.COLS
+IDX = np.arange(1, COLS + 1)  # range(1, 3160)
 
 
 def shift_array(arr, k):
-    """配列を右にk個シフトする(numpy版)"""
     n = len(arr)
-    if k >= n:
+    if k >= 0:
+        if k >= n:
+            return np.zeros(n, dtype=arr.dtype)
+        result = np.empty(n, dtype=arr.dtype)
+        result[:k] = 0
+        result[k:] = arr[: n - k]
+        return result
+
+    # k < 0: 左シフト
+    shift = -k
+    if shift >= n:
         return np.zeros(n, dtype=arr.dtype)
     result = np.empty(n, dtype=arr.dtype)
-    result[:k] = 0
-    result[k:] = arr[: n - k]
+    result[n - shift:] = 0
+    result[: n - shift] = arr[shift:]
     return result
-
-def count_zero(arr):
-    return int(np.sum(np.all(arr == 0, axis=0)))
 
 def count_zero_mask(mask):
     """真偽値マスク(各列が『これまでの全階層で0』かどうか)からcountを求める"""
     return int(np.count_nonzero(mask))
 
 # 2,3,5,7,11,13,...,1579 の素数リスト(元コードのA2,A3,...,A1579に対応)
-PRIMES = [
-    2, 3, 5, 7, 11, 13, 17, 19, 
-    23, 29, 31, 37, 41, 43, 47, 53, 
-    59, 61, 67, 71, 73, 79, 83, 89, 
-    97, 101, 103, 107, 109, 113, 127, 131, 
-    137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227,
-    229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317, 331, 337, 347, 349,
-    353, 359, 367, 373, 379, 383, 389, 397, 401, 409, 419, 421, 431, 433, 439, 443, 449, 457, 461, 463, 467, 479,
-    487, 491, 499, 503, 509, 521, 523, 541, 547, 557, 563, 569, 571, 577, 587, 593, 599, 601, 607, 613, 617, 619,
-    631, 641, 643, 647, 653, 659, 661, 673, 677, 683, 691, 701, 709, 719, 727, 733, 739, 743, 751, 757, 761, 769,
-    773, 787, 797, 809, 811, 821, 823, 827, 829, 839, 853, 857, 859, 863, 877, 881, 883, 887, 907, 911, 919, 929,
-    937, 941, 947, 953, 967, 971, 977, 983, 991, 997, 1009, 1013, 1019, 1021, 1031, 1033, 1039, 1049, 1051, 1061,
-    1063, 1069, 1087, 1091, 1093, 1097, 1103, 1109, 1117, 1123, 1129, 1151, 1153, 1163, 1171, 1181, 1187, 1193,
-    1201, 1213, 1217, 1223, 1229, 1231, 1237, 1249, 1259, 1277, 1279, 1283, 1289, 1291, 1297, 1301, 1303, 1307,
-    1319, 1321, 1327, 1361, 1367, 1373, 1381, 1399, 1409, 1423, 1427, 1429, 1433, 1439, 1447, 1451, 1453, 1459,
-    1471, 1481, 1483, 1487, 1489, 1493, 1499, 1511, 1523, 1531, 1543, 1549, 1553, 1559, 1567, 1571, 1579,
-]
-max_count = 0
+# 実体は config.py 側で管理する。
+PRIMES = cfg.PRIMES
+
+
+class SearchState:
+    """
+    1回の探索(run_search 呼び出し)にひもづく可変状態をまとめたクラス。
+
+    以前は max_count がモジュールグローバル変数だったため、同一プロセス内で
+    run_search() を複数回呼ぶと前回の値が残ってしまう(リセット漏れ)リスクや、
+    再入/将来的な並列化がしづらいという問題があった。
+    探索ごとにこのクラスのインスタンスを1つ作ることで、状態を呼び出し単位に
+    閉じ込め、再利用時のバグを構造的に防ぐ。
+
+    Attributes
+    ----------
+    limit : int
+        この件数未満の zero_mask カウントが出た枝は打ち切る(config.LIMIT 相当)。
+    target : int
+        depth == max_depth のとき、count がこれを超えたら打ち切る特別な閾値
+        (config.TARGET 相当)。
+    max_depth : int
+        depth がこの値と一致するときだけ target による打ち切りを有効にする
+        (config.MAX_DEPTH 相当)。
+    max_count : int
+        探索中に見つかった zero_mask カウントの最大値。実行中に更新される。
+    results : list[list[int]]
+        max_count を達成した key のリスト。max_count が更新されるとクリアされる。
+    """
+
+    def __init__(self, limit, target, max_depth):
+        self.limit = limit
+        self.target = target
+        self.max_depth = max_depth
+        self.max_count = 0
+        self.results = []
+
 
 def build_A(primes):
     """
@@ -96,7 +110,7 @@ def build_A(primes):
     """
     return np.array([(IDX % p == 1) for p in primes])
 
-def search(key, primes, depth, A, zero_mask, results):
+def search(key, primes, depth, A, zero_mask, state):
     """
     再帰的に各階層のシフト値を探索する汎用関数。
 
@@ -119,70 +133,87 @@ def search(key, primes, depth, A, zero_mask, results):
         shape=(COLS,) の真偽値配列。「1つ上の階層までで全て0だった列」を表す。
         呼び出し側は自分のマスクを渡した後、再利用しないこと(内部でANDした
         新しいマスクを作って子呼び出しに渡すため、呼び出し元のものは変更されない)。
-    results : list, optional
-        LIMIT以上のcountが出たkeyとcountを記録するリスト。Noneなら記録しない。
+    state : SearchState
+        limit / target / max_depth といった探索パラメータと、探索中に更新される
+        max_count / results をまとめた状態オブジェクト。この1回の探索
+        (run_search 呼び出し)の間だけ生存し、再帰全体で共有・更新される。
     """
-    global max_count
     level = len(key) - 1  # 今回シフトを設定した階層(0-indexed)
-    row_nonzero = shift_array(A[level], key[level])  # True = その素数の倍数位置
+    row_nonzero = shift_array(A[level], key[level])
     zero_mask = zero_mask & ~row_nonzero
 
     count = count_zero_mask(zero_mask)
     logger.debug("depth=%d key=%s count=%s", level + 1, key, count)
 
-    if count < LIMIT:
-        logger.debug("break key=%s count=%d", key, count)
-        return  # この枝は打ち切り(子孫を探索しない)
-
-    if count < max_count:
+    if count < state.limit or count < state.max_count:
         logger.debug("break key=%s count=%d", key, count)
         return  # この枝は打ち切り(子孫を探索しない)
 
     if level + 1 >= depth:
-        if count > max_count:
-            if max_count == TARGET and count > TARGET:
+        if depth == state.max_depth:
+            if count > state.target:
                 logger.debug("break key=%s count=%d", key, count)
                 return
-            max_count = count
-            logger.info("max_count=%d", max_count)
-            results.clear()
-            results.append(key)
+
+        if count > state.max_count:
+            state.max_count = count
+            logger.info("max_count=%d", state.max_count)
+            state.results.clear()
+            state.results.append(key)
             logger.debug("done key=%s count=%d", key, count)
-        elif count == max_count:
-            results.append(key)
+        elif count == state.max_count:
+            state.results.append(key)
             logger.debug("done key=%s count=%d", key, count)
         return  # 最深階層に到達
 
     next_p = primes[level + 1]
     for i in range(next_p):
-        search(key + [i], primes, depth, A, zero_mask, results)
+        search(key + [i], primes, depth, A, zero_mask, state)
 
 
-def run_search(primes, depth):
-    """primes[:depth] を使って深さ depth までの探索を実行するエントリポイント"""
+def run_search(primes, depth, limit=None, target=None, max_depth=None):
+    """
+    primes[:depth] を使って深さ depth までの探索を実行するエントリポイント。
+
+    limit / target / max_depth を省略した場合は config.py の値(cfg.LIMIT /
+    cfg.TARGET / cfg.MAX_DEPTH)を使う。呼び出しごとに新しい SearchState を
+    作成するため、同一プロセス内で run_search() を複数回呼んでも前回の
+    max_count / results が次回の探索に混入することはない。
+
+    Returns
+    -------
+    SearchState
+        探索完了後の状態(state.results に該当 key のリスト、
+        state.max_count に達成した最大カウントが入っている)。
+    """
     if depth > len(primes):
         raise ValueError(f"depth={depth} が primes の長さ({len(primes)})を超えています")
 
+    state = SearchState(
+        limit=cfg.LIMIT if limit is None else limit,
+        target=cfg.TARGET if target is None else target,
+        max_depth=cfg.MAX_DEPTH if max_depth is None else max_depth,
+    )
+
     A = build_A(primes[:depth])
-    results = []
     initial_mask = np.ones(COLS, dtype=bool)
 
     first_p = primes[0]
     for i in range(first_p):
-        search([i], primes, depth, A, initial_mask, results)
+        search([i], primes, depth, A, initial_mask, state)
 
-    return results
+    return state
 
 
 if __name__ == "__main__":
     logger.info("HLSearch 開始 (log file: %s)", LOG_FILE)
 
-    DEPTH = 7  # 使用する素数の個数(可変)。元コードの calc2->calc3->calc5->calc7 相当
-    results = run_search(PRIMES, DEPTH)
+    DEPTH = cfg.DEPTH  # 使用する素数の個数(可変)。元コードの calc2->calc3->calc5->calc7 相当
+    state = run_search(PRIMES, DEPTH)
 
-    logger.info("最大値: %d", max_count)
-    logger.info("該当件数: %d",len(results))
-    for key in results:
+    logger.info("最大値: %d", state.max_count)
+    logger.info("該当件数: %d", len(state.results))
+    for key in state.results:
         logger.info("key=%s", key)
 
     logger.info("HLSearch 終了")
