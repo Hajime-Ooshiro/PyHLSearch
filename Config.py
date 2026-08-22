@@ -8,36 +8,37 @@ HLSearch.py 本体のロジックに触れずにここだけ編集すれば変�
 
 import logging
 from pathlib import Path
+from typing import List
 
 # ============================================================
 # ロギング設定
 # ============================================================
 
 # ログファイルの出力先ディレクトリ(このファイルと同じ場所)
-LOG_DIR = Path(__file__).resolve().parent
+LOG_DIR: Path = Path(__file__).resolve().parent
 
 # ログファイル名は固定(HLSearch.log)。サイズが上限を超えたら
 # HLSearch.log.1, HLSearch.log.2, ... にローテーションする。
-LOG_FILE = LOG_DIR / "HLSearch.log"
+LOG_FILE: Path = LOG_DIR / "HLSearch.log"
 
 # 1ファイルあたりの最大サイズ(bytes)。超えたらローテーション。
-LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB
 
 # 保持する世代数(HLSearch.log.1 ~ HLSearch.log.<LOG_BACKUP_COUNT>)
-LOG_BACKUP_COUNT = 100
+LOG_BACKUP_COUNT: int = 100
 
 # コンソール / ファイル それぞれの出力レベル
 # (詳細なデバッグログはファイルにだけ残したい場合は FILE_LOG_LEVEL を
 #  logging.DEBUG に変更する)
-CONSOLE_LOG_LEVEL = logging.INFO
-FILE_LOG_LEVEL = logging.INFO
+CONSOLE_LOG_LEVEL: int = logging.INFO
+FILE_LOG_LEVEL: int = logging.INFO
 
 # ログのフォーマット
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
+LOG_FORMAT: str = "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
 
 # max_count を達成した shift_path を書き出すファイル(このファイルと同じ場所)。
 # max_count が更新されるたびに空にし、count == max_count のたびに1行追加する。
-SHIFT_PATH_FILE = LOG_DIR / "shift_path.txt"
+SHIFT_PATH_FILE: Path = LOG_DIR / "shift_path.txt"
 
 
 # ============================================================
@@ -45,18 +46,18 @@ SHIFT_PATH_FILE = LOG_DIR / "shift_path.txt"
 # ============================================================
 
 # 列数(元コードの range(1, 3160) に対応)
-COLS = 3159
+COLS: int = 3159
 
 # この件数以上の zero_mask カウントが出ない枝は打ち切る
-LIMIT = 400
+LIMIT: int = 400
 
 # 目標値。max_count がちょうど TARGET のとき、それを超える更新を許可するかどうかの
 # 判定に使う特別な閾値(search() 内の分岐を参照)
-TARGET = 447
+TARGET: int = 447
 
 # 探索する階層数(= 使用する素数の個数)。元コードの calc2->calc3->calc5->calc7 相当
-DEPTH = 8
-MAX_DEPTH = 249
+DEPTH: int = 8
+MAX_DEPTH: int = 249
 
 
 # ============================================================
@@ -64,7 +65,7 @@ MAX_DEPTH = 249
 # ============================================================
 
 # 2,3,5,7,11,13,...,1579 の素数リスト(元コードのA2,A3,...,A1579に対応)
-PRIMES = [
+PRIMES: List[int] = [
     2, 3, 5, 7, 11, 13, 17, 19,
     23, 29, 31, 37, 41, 43, 47, 53,
     59, 61, 67, 71, 73, 79, 83, 89,

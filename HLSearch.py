@@ -1,7 +1,10 @@
 # HLSearch.py
 import logging
 import logging.handlers
+from typing import List, Optional
+
 import numpy as np
+import numpy.typing as npt
 
 import Config as cfg
 
@@ -34,30 +37,32 @@ if not logger.handlers:
     logger.addHandler(_console_handler)
     logger.addHandler(_file_handler)
 
-COLS = cfg.COLS
-IDX = np.arange(1, COLS + 1)  # range(1, 3160)
+COLS: int = cfg.COLS
+IDX: npt.NDArray[np.int64] = np.arange(1, COLS + 1)  # range(1, 3160)
 
 SHIFT_PATH_FILE = cfg.SHIFT_PATH_FILE
 
 
-def clear_shift_path_file():
+def clear_shift_path_file() -> None:
     """shift_path.txt を空にする(max_count が更新されたときに呼ぶ)"""
     with open(SHIFT_PATH_FILE, "w", encoding="utf-8"):
         pass
 
 
-def append_shift_path_file(shift_path):
+def append_shift_path_file(state: "SearchState", first: bool = False) -> None:
     """shift_path.txt に shift_path を1行追加する"""
     with open(SHIFT_PATH_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{shift_path}\n")
+        if first:
+            f.write(f"max_count:{state.max_count}\n")
+        f.write(f"{state.shift_path}\n")
 
 
-def shift_array(arr, k):
+def shift_array(arr: npt.NDArray[np.bool_], k: int) -> npt.NDArray[np.bool_]:
     """
         k > 0 の時は右側にシフトする。
         k < 0 の時は左側にシフトする。
     """
-    n = len(arr)
+    n: int = len(arr)
     if k >= 0:
         if k >= n:
             return np.zeros(n, dtype=arr.dtype)
@@ -67,7 +72,7 @@ def shift_array(arr, k):
         return result
 
     # k < 0: 左シフト
-    shift = -k
+    shift: int = -k
     if shift >= n:
         return np.zeros(n, dtype=arr.dtype)
     result = np.empty(n, dtype=arr.dtype)
@@ -75,13 +80,13 @@ def shift_array(arr, k):
     result[: n - shift] = arr[shift:]
     return result
 
-def count_zero_mask(mask):
+def count_zero_mask(mask: npt.NDArray[np.bool_]) -> int:
     """真偽値マスク(各列が『これまでの全階層で0』かどうか)からcountを求める"""
     return int(np.count_nonzero(mask))
 
 # 2,3,5,7,11,13,...,1579 の素数リスト(元コードのA2,A3,...,A1579に対応)
 # 実体は config.py 側で管理する。
-PRIMES = cfg.PRIMES
+PRIMES: List[int] = cfg.PRIMES
 
 
 class SearchState:
@@ -116,18 +121,35 @@ class SearchState:
         進捗表示用
     count2 : int
         進捗表示用
+    primes : list[int]
+        探索対象の素数リスト(先頭から順に1階層ずつ対応)。run_search で設定される。
+    base_array : np.ndarray
+        shape=(depth, COLS) の基準配列(build_base_array(primes[:depth]) で作成)。
+        run_search で設定される。
+    shift_path : list[int]
+        現在の階層までの各素数に対するシフト値のリスト。search() 内で
+        再帰の入り口で append、抜けるときに pop することで、呼び出しスタックと
+        同期させる(値そのものは search() の引数として渡さない)。
+    zero_mask : np.ndarray
+        shape=(COLS,) の真偽値配列。「1つ上の階層までで全て0だった列」を表す。
+        search() が子階層を呼び出す直前にその階層のマスクへ更新し、子の
+        呼び出しがすべて終わったら元の値へ復元する(スタックのように使う)。
     """
 
-    def __init__(self, limit, target, max_depth):
-        self.limit = limit
-        self.target = target
-        self.max_depth = max_depth
-        self.max_count = 0
-        self.results = 0
-        self.count1 = 0
-        self.count2 = 0
+    def __init__(self, limit: int, target: int, max_depth: int) -> None:
+        self.limit: int = limit
+        self.target: int = target
+        self.max_depth: int = max_depth
+        self.max_count: int = 0
+        self.results: int = 0
+        self.count1: int = 0
+        self.count2: int = 0
+        self.primes: Optional[List[int]] = None
+        self.base_array: Optional[npt.NDArray[np.bool_]] = None
+        self.shift_path: List[int] = []
+        self.zero_mask: Optional[npt.NDArray[np.bool_]] = None
 
-    def progress(self):
+    def progress(self) -> None:
         """ 進捗表示 """
         self.count1 += 1
         if self.count1 % 100000 == 0:
@@ -167,9 +189,9 @@ class SearchState:
                 self.count2 = 0
         
 
-def build_base_array(primes):
+def build_base_array(primes: List[int]) -> npt.NDArray[np.bool_]:
     """
-    指定した素数リストからA配列を作る。
+    指定した素数リストからbase_arrayを作る。
 
     後段の処理(search)では「0かどうか」しか使わないため、値そのもの(素数p)
     ではなく bool(idx % p == 1) を格納する。int64(8byte/要素)ではなく
@@ -178,51 +200,49 @@ def build_base_array(primes):
     """
     return np.array([(IDX % p == 1) for p in primes])
 
-def search(shift_path, primes, depth, base_array, zero_mask, state):
+def search(depth: int, state: SearchState) -> None:
     """
     再帰的に各階層のシフト値を探索する汎用関数。
 
     count_zero を毎回フルスキャンする代わりに、「これまでの階層すべてで0だった列」
-    を表す真偽値マスク zero_mask を引き回し、1階層進めるたびに今回の行の0判定を
-    AND するだけにすることで、count計算を O(depth) の毎回全スキャンから
+    を表す真偽値マスク state.zero_mask を引き回し、1階層進めるたびに今回の行の
+    0判定を AND するだけにすることで、count計算を O(depth) の毎回全スキャンから
     O(1) の増分更新に落としている(depth回の再帰全体で見ると O(depth^2) -> O(depth))。
+
+    shift_path / primes / base_array / zero_mask はすべて引数ではなく
+    state の属性として保持する。shift_path は再帰の入り口で append、
+    抜けるときに pop することで呼び出しスタックと同期させ、zero_mask は
+    子階層へ降りる直前に更新し、子の呼び出しがすべて終わったら元の値へ
+    復元することで、従来「引数として都度渡していた」ものと同じスコープを
+    実現している。
 
     Parameters
     ----------
-    shift_path : list[int]
-        現在の階層までの各素数に対するシフト値のリスト(最後の要素が今回設定した値)
-    primes : list[int]
-        探索対象の素数リスト(先頭から順に1階層ずつ対応)
     depth : int
         探索する階層数(= 使用する素数の個数)。可変。
-    base_array : np.ndarray
-        shape=(depth, COLS) の基準配列(build_base_array(primes[:depth]) で作成)
-    zero_mask : np.ndarray
-        shape=(COLS,) の真偽値配列。「1つ上の階層までで全て0だった列」を表す。
-        呼び出し側は自分のマスクを渡した後、再利用しないこと(内部でANDした
-        新しいマスクを作って子呼び出しに渡すため、呼び出し元のものは変更されない)。
     state : SearchState
-        limit / target / max_depth といった探索パラメータと、探索中に更新される
-        max_count / results をまとめた状態オブジェクト。この1回の探索
-        (run_search 呼び出し)の間だけ生存し、再帰全体で共有・更新される。
+        limit / target / max_depth といった探索パラメータ、探索中に更新される
+        max_count / results、および primes / base_array / shift_path / zero_mask
+        をまとめた状態オブジェクト。この1回の探索(run_search 呼び出し)の間
+        だけ生存し、再帰全体で共有・更新される。
     """
     state.progress()
-    level = len(shift_path) - 1  # 今回シフトを設定した階層(0-indexed)
-    row_nonzero = shift_array(base_array[level], shift_path[level])
-    zero_mask = zero_mask & ~row_nonzero
+    level = len(state.shift_path) - 1  # 今回シフトを設定した階層(0-indexed)
+    row_nonzero = shift_array(state.base_array[level], state.shift_path[level])
+    mask = state.zero_mask & ~row_nonzero
 
-    count = count_zero_mask(zero_mask)
-    logger.debug("depth=%d shift_path=%s count=%s", level + 1, shift_path, count)
+    count = count_zero_mask(mask)
+    logger.debug("depth=%d shift_path=%s count=%s", level + 1, state.shift_path, count)
 
     if count < state.limit or count < state.max_count:
-        logger.debug("break shift_path=%s count=%d", shift_path, count)
+        logger.debug("break shift_path=%s count=%d", state.shift_path, count)
         return  # この枝は打ち切り(子孫を探索しない)
 
     if level + 1 >= depth:
         """ 最深部ではcountがtargetを超えるのを無効とする """
         if depth == state.max_depth:
             if count > state.target:
-                logger.debug("break shift_path=%s count=%d", shift_path, count)
+                logger.debug("break shift_path=%s count=%d", state.shift_path, count)
                 return
 
         if count > state.max_count:
@@ -230,20 +250,31 @@ def search(shift_path, primes, depth, base_array, zero_mask, state):
             logger.info("max_count=%d", state.max_count)
             state.results = 1
             clear_shift_path_file()
-            append_shift_path_file(shift_path)
-            logger.debug("done shift_path=%s count=%d", shift_path, count)
+            append_shift_path_file(state, True)
+            logger.debug("done shift_path=%s count=%d", state.shift_path, count)
         elif count == state.max_count:
             state.results += 1
-            append_shift_path_file(shift_path)
-            logger.debug("done shift_path=%s count=%d", shift_path, count)
+            append_shift_path_file(state)
+            logger.debug("done shift_path=%s count=%d", state.shift_path, count)
         return  # 最深階層に到達
 
-    next_p = primes[level + 1]
+    next_p = state.primes[level + 1]
+    saved_mask = state.zero_mask
+    state.zero_mask = mask
     for i in range(next_p):
-        search(shift_path + [i], primes, depth, base_array, zero_mask, state)
+        state.shift_path.append(i)
+        search(depth, state)
+        state.shift_path.pop()
+    state.zero_mask = saved_mask
 
 
-def run_search(primes, depth, limit=None, target=None, max_depth=None):
+def run_search(
+    primes: List[int],
+    depth: int,
+    limit: Optional[int] = None,
+    target: Optional[int] = None,
+    max_depth: Optional[int] = None,
+) -> SearchState:
     """
     primes[:depth] を使って深さ depth までの探索を実行するエントリポイント。
 
@@ -266,13 +297,16 @@ def run_search(primes, depth, limit=None, target=None, max_depth=None):
         target=cfg.TARGET if target is None else target,
         max_depth=cfg.MAX_DEPTH if max_depth is None else max_depth,
     )
-
-    base_array = build_base_array(primes[:depth])
-    initial_mask = np.ones(COLS, dtype=bool)
+    state.primes = primes
+    state.base_array = build_base_array(primes[:depth])
+    state.zero_mask = np.ones(COLS, dtype=bool)
+    state.shift_path = []
 
     first_p = primes[0]
     for i in range(first_p):
-        search([i], primes, depth, base_array, initial_mask, state)
+        state.shift_path.append(i)
+        search(depth, state)
+        state.shift_path.pop()
 
     return state
 
