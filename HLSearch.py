@@ -15,6 +15,9 @@ LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 # 保持する世代数(HLSearch.log.1 ~ HLSearch.log.<LOG_BACKUP_COUNT>)
 LOG_BACKUP_COUNT = 100
 
+CONSOLE_LOG_LEVEL = logging.INFO
+FILE_LOG_LEVEL = logging.INFO
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -23,7 +26,7 @@ _formatter = logging.Formatter(
 )
 
 _console_handler = logging.StreamHandler()
-_console_handler.setLevel(logging.INFO)
+_console_handler.setLevel(CONSOLE_LOG_LEVEL)
 _console_handler.setFormatter(_formatter)
 
 _file_handler = logging.handlers.RotatingFileHandler(
@@ -32,7 +35,7 @@ _file_handler = logging.handlers.RotatingFileHandler(
     backupCount=LOG_BACKUP_COUNT,
     encoding="utf-8",
 )
-_file_handler.setLevel(logging.INFO)
+_file_handler.setLevel(FILE_LOG_LEVEL)
 _file_handler.setFormatter(_formatter)
 
 logger.addHandler(_console_handler)
@@ -93,7 +96,7 @@ def build_A(primes):
     """
     return np.array([(IDX % p == 1) for p in primes])
 
-def search(key, primes, depth, A, zero_mask, results=None):
+def search(key, primes, depth, A, zero_mask, results):
     """
     再帰的に各階層のシフト値を探索する汎用関数。
 
@@ -128,25 +131,26 @@ def search(key, primes, depth, A, zero_mask, results=None):
     logger.debug("depth=%d key=%s count=%s", level + 1, key, count)
 
     if count < LIMIT:
-        logger.debug(("break", list(key), count))
+        logger.debug("break key=%s count=%d", key, count)
         return  # この枝は打ち切り(子孫を探索しない)
 
     if count < max_count:
-        logger.debug(("break", list(key), count))
+        logger.debug("break key=%s count=%d", key, count)
         return  # この枝は打ち切り(子孫を探索しない)
 
     if level + 1 >= depth:
         if count > max_count:
-            # if count > TARGET:
-            #     logger.debug(("break", list(key), count))
-            #     return
+            if max_count == TARGET and count > TARGET:
+                logger.debug("break key=%s count=%d", key, count)
+                return
             max_count = count
             logger.info("max_count=%d", max_count)
-            results = [key]
-            logger.debug(("done", list(key), count))
-        if count == max_count:
+            results.clear()
             results.append(key)
-            logger.debug(("done", list(key), count))
+            logger.debug("done key=%s count=%d", key, count)
+        elif count == max_count:
+            results.append(key)
+            logger.debug("done key=%s count=%d", key, count)
         return  # 最深階層に到達
 
     next_p = primes[level + 1]
@@ -173,7 +177,7 @@ def run_search(primes, depth):
 if __name__ == "__main__":
     logger.info("HLSearch 開始 (log file: %s)", LOG_FILE)
 
-    DEPTH = 8  # 使用する素数の個数(可変)。元コードの calc2->calc3->calc5->calc7 相当
+    DEPTH = 7  # 使用する素数の個数(可変)。元コードの calc2->calc3->calc5->calc7 相当
     results = run_search(PRIMES, DEPTH)
 
     logger.info("最大値: %d", max_count)
