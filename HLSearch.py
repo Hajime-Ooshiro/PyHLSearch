@@ -30,8 +30,9 @@ _file_handler = logging.handlers.RotatingFileHandler(
 _file_handler.setLevel(FILE_LOG_LEVEL)
 _file_handler.setFormatter(_formatter)
 
-logger.addHandler(_console_handler)
-logger.addHandler(_file_handler)
+if not logging.handlers:
+    logger.addHandler(_console_handler)
+    logger.addHandler(_file_handler)
 
 COLS = cfg.COLS
 IDX = np.arange(1, COLS + 1)  # range(1, 3160)
@@ -88,7 +89,7 @@ class SearchState:
     max_count : int
         探索中に見つかった zero_mask カウントの最大値。実行中に更新される。
     results : list[list[int]]
-        max_count を達成した key のリスト。max_count が更新されるとクリアされる。
+        max_count を達成した shift_path のリスト。max_count が更新されるとクリアされる。
     """
 
     def __init__(self, limit, target, max_depth):
@@ -99,7 +100,7 @@ class SearchState:
         self.results = []
 
 
-def build_A(primes):
+def build_base_array(primes):
     """
     指定した素数リストからA配列を作る。
 
@@ -110,7 +111,7 @@ def build_A(primes):
     """
     return np.array([(IDX % p == 1) for p in primes])
 
-def search(key, primes, depth, A, zero_mask, state):
+def search(shift_path, primes, depth, base_array, zero_mask, state):
     """
     再帰的に各階層のシフト値を探索する汎用関数。
 
@@ -121,14 +122,14 @@ def search(key, primes, depth, A, zero_mask, state):
 
     Parameters
     ----------
-    key : list[int]
+    shift_path : list[int]
         現在の階層までの各素数に対するシフト値のリスト(最後の要素が今回設定した値)
     primes : list[int]
         探索対象の素数リスト(先頭から順に1階層ずつ対応)
     depth : int
         探索する階層数(= 使用する素数の個数)。可変。
-    A : np.ndarray
-        shape=(depth, COLS) の基準配列(build_A(primes[:depth]) で作成)
+    base_array : np.ndarray
+        shape=(depth, COLS) の基準配列(build_base_array(primes[:depth]) で作成)
     zero_mask : np.ndarray
         shape=(COLS,) の真偽値配列。「1つ上の階層までで全て0だった列」を表す。
         呼び出し側は自分のマスクを渡した後、再利用しないこと(内部でANDした
@@ -138,37 +139,38 @@ def search(key, primes, depth, A, zero_mask, state):
         max_count / results をまとめた状態オブジェクト。この1回の探索
         (run_search 呼び出し)の間だけ生存し、再帰全体で共有・更新される。
     """
-    level = len(key) - 1  # 今回シフトを設定した階層(0-indexed)
-    row_nonzero = shift_array(A[level], key[level])
+    level = len(shift_path) - 1  # 今回シフトを設定した階層(0-indexed)
+    row_nonzero = shift_array(base_array[level], shift_path[level])
     zero_mask = zero_mask & ~row_nonzero
 
     count = count_zero_mask(zero_mask)
-    logger.debug("depth=%d key=%s count=%s", level + 1, key, count)
+    logger.debug("depth=%d shift_path=%s count=%s", level + 1, shift_path, count)
 
     if count < state.limit or count < state.max_count:
-        logger.debug("break key=%s count=%d", key, count)
+        logger.debug("break shift_path=%s count=%d", shift_path, count)
         return  # この枝は打ち切り(子孫を探索しない)
 
     if level + 1 >= depth:
+        """ 最深部ではcountがtargetを超えるのを無効とする """
         if depth == state.max_depth:
             if count > state.target:
-                logger.debug("break key=%s count=%d", key, count)
+                logger.debug("break shift_path=%s count=%d", shift_path, count)
                 return
 
         if count > state.max_count:
             state.max_count = count
             logger.info("max_count=%d", state.max_count)
             state.results.clear()
-            state.results.append(key)
-            logger.debug("done key=%s count=%d", key, count)
+            state.results.append(shift_path)
+            logger.debug("done shift_path=%s count=%d", shift_path, count)
         elif count == state.max_count:
-            state.results.append(key)
-            logger.debug("done key=%s count=%d", key, count)
+            state.results.append(shift_path)
+            logger.debug("done shift_path=%s count=%d", shift_path, count)
         return  # 最深階層に到達
 
     next_p = primes[level + 1]
     for i in range(next_p):
-        search(key + [i], primes, depth, A, zero_mask, state)
+        search(shift_path + [i], primes, depth, base_array, zero_mask, state)
 
 
 def run_search(primes, depth, limit=None, target=None, max_depth=None):
@@ -183,7 +185,7 @@ def run_search(primes, depth, limit=None, target=None, max_depth=None):
     Returns
     -------
     SearchState
-        探索完了後の状態(state.results に該当 key のリスト、
+        探索完了後の状態(state.results に該当 shift_path のリスト、
         state.max_count に達成した最大カウントが入っている)。
     """
     if depth > len(primes):
@@ -195,12 +197,12 @@ def run_search(primes, depth, limit=None, target=None, max_depth=None):
         max_depth=cfg.MAX_DEPTH if max_depth is None else max_depth,
     )
 
-    A = build_A(primes[:depth])
+    base_array = build_base_array(primes[:depth])
     initial_mask = np.ones(COLS, dtype=bool)
 
     first_p = primes[0]
     for i in range(first_p):
-        search([i], primes, depth, A, initial_mask, state)
+        search([i], primes, depth, base_array, initial_mask, state)
 
     return state
 
@@ -213,7 +215,7 @@ if __name__ == "__main__":
 
     logger.info("最大値: %d", state.max_count)
     logger.info("該当件数: %d", len(state.results))
-    for key in state.results:
-        logger.info("key=%s", key)
+    for shift_path in state.results:
+        logger.info("shift_path=%s", shift_path)
 
     logger.info("HLSearch 終了")
