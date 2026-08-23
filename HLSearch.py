@@ -8,6 +8,10 @@ import numpy.typing as npt
 
 import Config as cfg
 
+# --- Debug設定
+DEBUG = cfg.DEBUG
+
+
 # --- logging設定(設定値はすべて config.py に集約) ---
 LOG_FILE = cfg.LOG_FILE
 LOG_MAX_BYTES = cfg.LOG_MAX_BYTES
@@ -201,17 +205,20 @@ def search(depth: int, state: SearchState) -> None:
     mask = state.zero_mask & ~row_nonzero
 
     count = count_zero_mask(mask)
-    logger.debug("depth=%d shift_path=%s count=%s", level + 1, state.shift_path, count)
+    if DEBUG:
+        logger.debug("depth=%d shift_path=%s count=%s", level + 1, state.shift_path, count)
 
     if count < state.limit or count < state.max_count:
-        logger.debug("break shift_path=%s count=%d", state.shift_path, count)
+        if DEBUG:
+            logger.debug("break shift_path=%s count=%d", state.shift_path, count)
         return  # この枝は打ち切り(子孫を探索しない)
 
     if level + 1 >= depth:
         """ 最深部ではcountがtargetを超えるのを無効とする """
         if depth == state.max_depth:
             if count > state.target:
-                logger.debug("break shift_path=%s count=%d", state.shift_path, count)
+                if DEBUG:
+                    logger.debug("break shift_path=%s count=%d", state.shift_path, count)
                 return
 
         if count > state.max_count:
@@ -220,11 +227,13 @@ def search(depth: int, state: SearchState) -> None:
             state.results = 1
             clear_shift_path_file()
             append_shift_path_file(state, True)
-            logger.debug("done shift_path=%s count=%d", state.shift_path, count)
+            if DEBUG:
+                logger.debug("done shift_path=%s count=%d", state.shift_path, count)
         elif count == state.max_count:
             state.results += 1
             append_shift_path_file(state)
-            logger.debug("done shift_path=%s count=%d", state.shift_path, count)
+            if DEBUG:
+                logger.debug("done shift_path=%s count=%d", state.shift_path, count)
         return  # 最深階層に到達
 
     next_p = state.primes[level + 1]
