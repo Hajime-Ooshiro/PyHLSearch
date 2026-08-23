@@ -17,7 +17,7 @@
 - その他の依存ライブラリ（`requirements.txt` に記載）
 
 ## セットアップ & 実行方法
-python PyHLSearch.py
+python HLSearch.py
 
 ### 1. リポジトリのクローン
 ```bash
