@@ -154,40 +154,9 @@ class SearchState:
         self.count1 += 1
         if self.count1 % 100000 == 0:
             self.count1 = 0
-            if self.count2 == 0:
-                print("+---------")
-                self.count2 += 1
-            elif self.count2 == 1:
-                print("-+--------")
-                self.count2 += 1
-            elif self.count2 == 2:
-                print("--+-------")
-                self.count2 += 1
-            elif self.count2 == 3:
-                print("---+------")
-                self.count2 += 1
-            elif self.count2 == 3:
-                print("----+-----")
-                self.count2 += 1
-            elif self.count2 == 4:
-                print("-----+----")
-                self.count2 += 1
-            elif self.count2 == 5:
-                print("------+---")
-                self.count2 += 1
-            elif self.count2 == 6:
-                print("-------+--")
-                self.count2 += 1
-            elif self.count2 == 7:
-                print("--------+-")
-                self.count2 += 1
-            elif self.count2 == 8:
-                print("---------+")
-                self.count2 += 1
-            elif self.count2 == 9:
-                print("----------")
-                self.count2 = 0
-        
+            pos = self.count2 % 10
+            print("-" * pos + "+" + "-" * (9 - pos))
+            self.count2 = (self.count2 + 1) % 10        
 
 def build_base_array(primes: List[int]) -> npt.NDArray[np.bool_]:
     """
