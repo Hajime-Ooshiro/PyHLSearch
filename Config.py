@@ -43,7 +43,6 @@ FILE_LOG_LEVEL: int = logging.INFO
 LOG_FORMAT: str = "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
 
 # max_count を達成した shift_path を書き出すファイル(このファイルと同じ場所)。
-# max_count が更新されるたびに空にし、count == max_count のたびに1行追加する。
 SHIFT_PATH_FILE: Path = LOG_DIR / "shift_path.txt"
 
 
@@ -58,10 +57,10 @@ COLS: int = 3159
 LIMIT: int = 400
 
 # 目標値。max_count がちょうど TARGET のとき、それを超える更新を許可するかどうかの
-# 判定に使う特別な閾値(search() 内の分岐を参照)
+# 判定に使う特別な閾値(_search() 内の分岐を参照)
 TARGET: int = 447
 
-# 探索する階層数(= 使用する素数の個数)。元コードの calc2->calc3->calc5->calc7 相当
+# 探索する階層数(= 使用する素数の個数)。
 DEPTH: int = 8
 MAX_DEPTH: int = 249
 
@@ -70,7 +69,7 @@ MAX_DEPTH: int = 249
 # 素数リスト
 # ============================================================
 
-# 2,3,5,7,11,13,...,1579 の素数リスト(元コードのA2,A3,...,A1579に対応)
+# 2,3,5,7,11,13,...,1579 の素数リスト
 PRIMES: List[int] = [
     2, 3, 5, 7, 11, 13, 17, 19,
     23, 29, 31, 37, 41, 43, 47, 53,
