@@ -61,11 +61,20 @@ LIMIT: int = 400
 TARGET: int = 447
 
 # 探索する階層数(= 使用する素数の個数)。
-DEPTH: int = 8
+DEPTH: int = 50
 MAX_DEPTH: int = 249
 
 # 進捗表示・実行制御設定
 SHOW_PROGRESS: bool = True  # プログレスバー(tqdm)を表示するかどうか
+
+# Beam法
+USE_BEAM_SEARCH = True
+
+# BEAM_WIDTH = 5000
+# BEAM_WIDTH = [2000, 1000, 500, 200, 100, 50]        # 直接リスト
+# または
+BEAM_WIDTH_SCHEDULE = {"start": 5000, "end": 50, "mode": "geometric"}
+
 
 # ============================================================
 # 素数リスト
