@@ -70,10 +70,10 @@ SHOW_PROGRESS: bool = True  # プログレスバー(tqdm)を表示するかど�
 # Beam法
 USE_BEAM_SEARCH = True
 
-# BEAM_WIDTH = 5000
+BEAM_WIDTH = 5000
 # BEAM_WIDTH = [2000, 1000, 500, 200, 100, 50]        # 直接リスト
 # または
-BEAM_WIDTH_SCHEDULE = {"start": 5000, "end": 50, "mode": "geometric"}
+# BEAM_WIDTH_SCHEDULE = {"start": 5000, "end": 50, "mode": "geometric"}
 
 
 # ============================================================
