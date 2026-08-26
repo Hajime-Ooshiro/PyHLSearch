@@ -4,6 +4,7 @@ import logging.handlers
 from pathlib import Path
 from typing import List, Tuple
 import time
+from tqdm import tqdm
 import Config as cfg
 
 # --- logging設定 ---
@@ -88,10 +89,19 @@ class FastSearcher:
         initial_mask = (1 << self.cols) - 1
 
         first_p = self.primes[0]
+        if cfg.SHOW_PROGRESS:
+            self.pbar = tqdm(
+                total=self.depth,
+                desc="Searching...",
+                unit="task",
+                dynamic_ncols=True,
+                )
         for s in range(first_p):
             self.shift_path.append(s)
             self._search(0, initial_mask & self.bit_tables[0][s])
             self.shift_path.pop()
+        if cfg.SHOW_PROGRESS:
+            self.pbar.close()
 
         self.save_best_paths()
 
@@ -107,6 +117,8 @@ class FastSearcher:
     def _search(self, level: int, current_mask: int) -> None:
         self.nodes_searched += 1
         count = current_mask.bit_count()
+        if cfg.SHOW_PROGRESS:
+            self.pbar.update(1)
 
         # 枝刈り
         if count < self.limit or count < self.max_count:
