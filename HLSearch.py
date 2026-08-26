@@ -7,28 +7,11 @@ import time
 from tqdm import tqdm
 import Config as cfg
 
-# --- logging設定 ---
+from cli_common import build_parser, ResolvedConfig, setup_logging
+
+# モジュールレベルではロガーのハンドルだけ用意し、実際の設定(ハンドラ登録)は
+# __main__ 内で CLI引数 / Config.py の値が確定してから行う。
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-_formatter = logging.Formatter(cfg.LOG_FORMAT)
-
-_console_handler = logging.StreamHandler()
-_console_handler.setLevel(cfg.CONSOLE_LOG_LEVEL)
-_console_handler.setFormatter(_formatter)
-
-_file_handler = logging.handlers.RotatingFileHandler(
-    cfg.LOG_FILE,
-    maxBytes=cfg.LOG_MAX_BYTES,
-    backupCount=cfg.LOG_BACKUP_COUNT,
-    encoding="utf-8",
-)
-_file_handler.setLevel(cfg.FILE_LOG_LEVEL)
-_file_handler.setFormatter(_formatter)
-
-if not logger.handlers:
-    logger.addHandler(_console_handler)
-    logger.addHandler(_file_handler)
 
 
 def build_bit_tables(primes: List[int], cols: int) -> List[List[int]]:
@@ -378,53 +361,55 @@ class BeamSearcher:
                 f.write(f"{path}\n")
 
 
-if __name__ == "__main__":
-    logger.info("HLSearch 開始 (log file: %s)", cfg.LOG_FILE)
+def main() -> None:
+    parser = build_parser(description="HLSearch: ビーム法/厳密解法によるシフト探索 (CPU版)")
+    args = parser.parse_args()
+    rc = ResolvedConfig(args, cfg, make_beam_schedule)
+    rc.apply_show_progress_override(cfg)
 
-    use_beam = getattr(cfg, "USE_BEAM_SEARCH", False)
+    setup_logging(
+        logger_name=__name__,
+        log_file=rc.log_file,
+        console_level=rc.log_level,
+        file_level=getattr(cfg, "FILE_LOG_LEVEL", "DEBUG"),
+        log_format=getattr(cfg, "LOG_FORMAT", "%(asctime)s [%(levelname)s] %(name)s: %(message)s"),
+        max_bytes=getattr(cfg, "LOG_MAX_BYTES", 10 * 1024 * 1024),
+        backup_count=getattr(cfg, "LOG_BACKUP_COUNT", 3),
+    )
 
-    if use_beam:
+    logger.info("HLSearch 開始 (log file: %s)", rc.log_file)
+    logger.debug(
+        "実行設定: depth=%s limit=%s target=%s max_depth=%s cols=%s "
+        "beam=%s beam_width=%s output_file=%s save_all_best=%s",
+        rc.depth, rc.limit, rc.target, rc.max_depth, rc.cols,
+        rc.use_beam, rc.beam_width, rc.output_file, rc.save_all_best,
+    )
+
+    if rc.use_beam:
         # BEAM_WIDTH は int / List[int] / Callable[[int], int] のいずれでもよい。
-        # 例えば Config.py 側で以下のように書ける:
-        #   BEAM_WIDTH = 100                                    # 固定幅
-        #   BEAM_WIDTH = [2000, 1000, 500, 200, 100, 50]        # 深さごとに直接指定
-        #   BEAM_WIDTH = make_beam_schedule(DEPTH, 2000, 50, mode="geometric")
-        # あるいは BEAM_WIDTH_SCHEDULE という辞書で簡易指定することもできる:
-        #   BEAM_WIDTH_SCHEDULE = {"start": 2000, "end": 50, "mode": "geometric"}
-        beam_width = getattr(cfg, "BEAM_WIDTH", None)
-        if beam_width is None:
-            schedule_cfg = getattr(cfg, "BEAM_WIDTH_SCHEDULE", None)
-            if schedule_cfg is not None:
-                beam_width = make_beam_schedule(
-                    depth=cfg.DEPTH,
-                    start_width=schedule_cfg["start"],
-                    end_width=schedule_cfg["end"],
-                    mode=schedule_cfg.get("mode", "linear"),
-                )
-            else:
-                beam_width = 100
-
+        # CLIからは --beam-width / --beam-schedule で指定でき、未指定なら
+        # Config.py の BEAM_WIDTH / BEAM_WIDTH_SCHEDULE、それも無ければ100を使う。
         searcher = BeamSearcher(
-            primes=cfg.PRIMES,
-            depth=cfg.DEPTH,
-            limit=cfg.LIMIT,
-            target=cfg.TARGET,
-            max_depth=cfg.MAX_DEPTH,
-            cols=cfg.COLS,
-            output_file=cfg.SHIFT_PATH_FILE,
-            beam_width=beam_width,
-            save_all_best=False,
+            primes=rc.primes,
+            depth=rc.depth,
+            limit=rc.limit,
+            target=rc.target,
+            max_depth=rc.max_depth,
+            cols=rc.cols,
+            output_file=rc.output_file,
+            beam_width=rc.beam_width,
+            save_all_best=rc.save_all_best,
         )
     else:
         searcher = FastSearcher(
-            primes=cfg.PRIMES,
-            depth=cfg.DEPTH,
-            limit=cfg.LIMIT,
-            target=cfg.TARGET,
-            max_depth=cfg.MAX_DEPTH,
-            cols=cfg.COLS,
-            output_file=cfg.SHIFT_PATH_FILE,
-            save_all_best=False,
+            primes=rc.primes,
+            depth=rc.depth,
+            limit=rc.limit,
+            target=rc.target,
+            max_depth=rc.max_depth,
+            cols=rc.cols,
+            output_file=rc.output_file,
+            save_all_best=rc.save_all_best,
         )
 
     searcher.run()
@@ -432,3 +417,7 @@ if __name__ == "__main__":
     logger.info("最大値: %d", searcher.max_count)
     logger.info("該当件数: %d", searcher.results)
     logger.info("HLSearch 終了")
+
+
+if __name__ == "__main__":
+    main()
