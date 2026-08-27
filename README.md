@@ -2,9 +2,6 @@
 
 [PyHLSearch ハーディ・リトルウッドの第２予想の反例の探索プログラム]
 
- # ![Demo](https://via.placeholder.com/800x400.png?text=App+Screenshot+or+GIF)
-#*※ スクリーンショットや動いているGIF画像をここに置くと一目で伝わります*
-
 ## 主な機能
 
 - **機能1**: プログラムを起動すると、演算結果をprint文で画面に出力する。
@@ -25,6 +22,16 @@ git clone [https://github.com/Hajime-Ooshiro/HLSearch.git](https://github.com/Ha
 cd your-repo-name
 
 ## 変更履歴 (Changelog)
+<details>
+<summary><b>v1.0.2</b> (2026-08-27)</summary>
+
+### 追加 (Added)
+- 進捗表示処理追加
+- ビームサーチ追加
+- ビームサーチをcudaで強化
+- CLI引数対応
+
+</details>
 
 <details>
 <summary><b>v1.0.1</b> (2026-08-23)</summary>
