@@ -17,12 +17,23 @@ from cli_common import build_parser, ResolvedConfig, setup_logging
 # __main__ 内で CLI引数 / Config.py の値が確定してから行う。
 logger = logging.getLogger(__name__)
 
+# bit_table キャッシュ: (primes_tuple, cols) -> bit_tables
+_bit_table_cache: dict = {}
+
 
 def build_bit_tables(primes: List[int], cols: int) -> List[List[int]]:
     """
     各素数 p とそのシフト s (0 <= s < p) に対し、
     (idx - s) % p != 1 となる列を残すビットマスクを生成。
+    
+    キャッシュ機構により、同じ素数リストと cols では計算を再利用する。
     """
+    cache_key = (tuple(primes), cols)
+    if cache_key in _bit_table_cache:
+        logger.debug("bit_table キャッシュヒット: primes=%d個, cols=%d", len(primes), cols)
+        return _bit_table_cache[cache_key]
+    
+    logger.debug("bit_table 生成開始: primes=%d個, cols=%d", len(primes), cols)
     all_ones = (1 << cols) - 1
     tables = []
     for p in primes:
@@ -38,6 +49,9 @@ def build_bit_tables(primes: List[int], cols: int) -> List[List[int]]:
                 drop_mask |= 1 << (idx - 1)
             p_shifts.append(all_ones ^ drop_mask)
         tables.append(p_shifts)
+    
+    _bit_table_cache[cache_key] = tables
+    logger.debug("bit_table 生成完了 (キャッシュ保存)")
     return tables
 
 
