@@ -74,8 +74,6 @@ def build_bit_tables(primes: List[int], cols: int) -> List[List[int]]:
     return tables
 
 
-
-
 class FastSearcher:
     """深さ優先 + 分枝限定法（厳密解法）。
     有効な（limit/max_countを満たす）分岐は全て探索するため、
