@@ -10,11 +10,8 @@ import logging
 from pathlib import Path
 from typing import List
 
-# ============================================================
-# デバッグ設定
-# ============================================================
+# 後方互換性のためのデバッグ設定。詳細ログは FILE_LOG_LEVEL で制御する。
 DEBUG: bool = False
-
 
 # ============================================================
 # ロギング設定
@@ -34,10 +31,10 @@ LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB
 LOG_BACKUP_COUNT: int = 100
 
 # コンソール / ファイル それぞれの出力レベル
-# (詳細なデバッグログはファイルにだけ残したい場合は FILE_LOG_LEVEL を
-#  logging.DEBUG に変更する)
+# ファイルには詳細なデバッグログを記録し、コンソールには重要なログのみ表示
 CONSOLE_LOG_LEVEL: int = logging.INFO
-FILE_LOG_LEVEL: int = logging.INFO
+FILE_LOG_LEVEL: int = logging.DEBUG
+SHOW_PROGRESS: bool = True
 
 # ログのフォーマット
 LOG_FORMAT: str = "%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"

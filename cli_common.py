@@ -4,7 +4,7 @@ import argparse
 import logging
 import logging.handlers
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List
 
 def build_parser(description: str, include_gpu_flag: bool = False) -> argparse.ArgumentParser:
     """共通のCLI引数パーサを構築する。"""
@@ -62,10 +62,32 @@ def _pick(cli_value: Any, cfg_value: Any, default: Any = None) -> Any:
 def resolve_primes(args: argparse.Namespace, cfg: Any) -> List[int]:
     if getattr(args, "primes", None):
         try:
-            return [int(x) for x in args.primes.split(",") if x.strip() != ""]
+            primes = [int(x.strip()) for x in args.primes.split(",") if x.strip()]
         except ValueError as e:
             raise ValueError(f"--primes の形式が不正です: {args.primes!r}") from e
-    return cfg.PRIMES
+    else:
+        primes = list(cfg.PRIMES)
+
+    if not primes:
+        raise ValueError("素数リストは空にできません")
+    if any(p < 2 for p in primes):
+        raise ValueError("素数リストには2以上の整数を指定してください")
+    if any(not _is_prime(p) for p in primes):
+        raise ValueError(f"素数でない値が含まれています: {primes!r}")
+    if any(left >= right for left, right in zip(primes, primes[1:])):
+        raise ValueError("素数リストは重複のない昇順で指定してください")
+    return primes
+
+
+def _is_prime(value: int) -> bool:
+    if value < 2:
+        return False
+    divisor = 2
+    while divisor * divisor <= value:
+        if value % divisor == 0:
+            return False
+        divisor += 1
+    return True
 
 
 class ResolvedConfig:
@@ -84,13 +106,35 @@ class ResolvedConfig:
 
         self.log_level = _pick(args.log_level, getattr(cfg, "CONSOLE_LOG_LEVEL", "INFO"))
         self.log_file = _pick(args.log_file, getattr(cfg, "LOG_FILE", "HLSearch.log"))
+        self.validate()
 
-    def apply_show_progress_override(self, cfg: Any) -> None:
-        """cfg.SHOW_PROGRESS を参照しているコード(FastSearcher等)のために、
-        CLIで明示的に指定された場合はConfigモジュール側の値も上書きする。
-        """
-        cfg.SHOW_PROGRESS = self.show_progress
+    def validate(self) -> None:
+        """CLIと設定ファイルを統合した探索パラメータを検証する。"""
+        integer_values = {
+            "depth": self.depth,
+            "limit": self.limit,
+            "target": self.target,
+            "max_depth": self.max_depth,
+            "cols": self.cols,
+        }
+        for name, value in integer_values.items():
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{name} は整数で指定してください: {value!r}")
 
+        if self.depth < 1:
+            raise ValueError("depth は1以上で指定してください")
+        if self.depth > len(self.primes):
+            raise ValueError(
+                f"depth ({self.depth}) は素数リストの長さ ({len(self.primes)}) 以下にしてください"
+            )
+        if self.max_depth < self.depth:
+            raise ValueError("max-depth は depth 以上で指定してください")
+        if self.cols < 1:
+            raise ValueError("cols は1以上で指定してください")
+        if self.limit < 0 or self.limit > self.cols:
+            raise ValueError(f"limit は0以上 cols以下で指定してください: {self.limit}")
+        if self.target < 0 or self.target > self.cols:
+            raise ValueError(f"target は0以上 cols以下で指定してください: {self.target}")
 
 def setup_logging(
     logger_name: str,
@@ -109,6 +153,7 @@ def setup_logging(
     logger.handlers.clear()
 
     formatter = logging.Formatter(log_format)
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(console_level)
