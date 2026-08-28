@@ -14,7 +14,19 @@
 - その他の依存ライブラリ（`requirements.txt` に記載）
 
 ## セットアップ & 実行方法
+```powershell
+cd HLSearch
 python HLSearch.py
+```
+
+テストは各プロジェクトのディレクトリから実行してください。ワークスペース直下には
+複数の実装（`HLSearch_Beam`、`HLSearch_Numba` など）が存在し、同名のテストモジュールが
+あるためです。
+
+```powershell
+cd HLSearch
+pytest
+```
 
 ### 1. リポジトリのクローン
 ```bash

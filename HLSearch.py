@@ -4,9 +4,8 @@
 #   --exact : FastSearcher (DFS+分枝限定法。厳密解。CPU(bigint)のみ)
 #
 import logging
-import logging.handlers
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 import time
 from tqdm import tqdm
 import Config as cfg
@@ -19,6 +18,19 @@ logger = logging.getLogger(__name__)
 
 # bit_table キャッシュ: (primes_tuple, cols) -> bit_tables
 _bit_table_cache: dict = {}
+
+
+def _validate_primes(primes: List[int]) -> None:
+    for prime in primes:
+        if not isinstance(prime, int) or isinstance(prime, bool) or prime < 2:
+            raise ValueError("primes には2以上の整数を指定してください")
+        divisor = 2
+        while divisor * divisor <= prime:
+            if prime % divisor == 0:
+                raise ValueError(f"素数でない値が含まれています: {prime}")
+            divisor += 1
+    if any(left >= right for left, right in zip(primes, primes[1:])):
+        raise ValueError("primes は重複のない昇順で指定してください")
 
 
 def build_bit_tables(primes: List[int], cols: int) -> List[List[int]]:
@@ -71,17 +83,33 @@ class FastSearcher:
         target: int,
         max_depth: int,
         cols: int,
-        output_file: Path,
+        output_file: Path | None = None,
         save_all_best: bool = False,
+        show_progress: bool = False,
     ):
+        if not primes:
+            raise ValueError("primes は空にできません")
+        _validate_primes(primes)
+        if depth < 1 or depth > len(primes):
+            raise ValueError("depth は1以上かつ素数リストの長さ以下で指定してください")
+        if max_depth < depth:
+            raise ValueError("max_depth は depth 以上で指定してください")
+        if cols < 1:
+            raise ValueError("cols は1以上で指定してください")
+        if limit < 0 or limit > cols:
+            raise ValueError("limit は0以上 cols以下で指定してください")
+        if target < 0 or target > cols:
+            raise ValueError("target は0以上 cols以下で指定してください")
+
         self.primes = primes[:depth]
         self.depth = depth
         self.limit = limit
         self.target = target
         self.max_depth = max_depth
         self.cols = cols
-        self.output_file = output_file
+        self.output_file = output_file or cfg.SHIFT_PATH_FILE
         self.save_all_best = save_all_best
+        self.show_progress = show_progress
 
         # 各深さ・シフトごとのビットマスク
         self.bit_tables = build_bit_tables(self.primes, cols)
@@ -97,7 +125,7 @@ class FastSearcher:
         initial_mask = (1 << self.cols) - 1
 
         first_p = self.primes[0]
-        if cfg.SHOW_PROGRESS:
+        if self.show_progress:
             self.pbar = tqdm(
                 total=self.depth,
                 desc="Searching...",
@@ -110,7 +138,7 @@ class FastSearcher:
                 self._search(0, initial_mask & self.bit_tables[0][s])
                 self.shift_path.pop()
         finally:
-            if cfg.SHOW_PROGRESS:
+            if self.show_progress:
                 self.pbar.close()
 
         self.save_best_paths()
@@ -127,7 +155,7 @@ class FastSearcher:
     def _search(self, level: int, current_mask: int) -> None:
         self.nodes_searched += 1
         count = current_mask.bit_count()
-        if cfg.SHOW_PROGRESS:
+        if self.show_progress:
             self.pbar.update(1)
 
         # 枝刈り
@@ -173,6 +201,7 @@ class FastSearcher:
 
     def save_best_paths(self) -> None:
         """最良解をファイルに出力する"""
+        self.output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.output_file, "w", encoding="utf-8") as f:
             f.write(f"max_count:{self.max_count}\n")
             f.write(f"results_count:{self.results}\n")
@@ -186,9 +215,10 @@ def main() -> None:
         include_gpu_flag=False,
     )
     args = parser.parse_args()
-    rc = ResolvedConfig(args, cfg)
-    rc.apply_show_progress_override(cfg)
-
+    try:
+        rc = ResolvedConfig(args, cfg)
+    except ValueError as exc:
+        parser.error(str(exc))
     setup_logging(
         logger_name=__name__,
         log_file=rc.log_file,
@@ -215,6 +245,7 @@ def main() -> None:
         cols=rc.cols,
         output_file=rc.output_file,
         save_all_best=rc.save_all_best,
+        show_progress=rc.show_progress,
     )
 
     searcher.run()
