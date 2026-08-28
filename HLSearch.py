@@ -89,13 +89,15 @@ class FastSearcher:
                 desc="Searching...",
                 unit="task",
                 dynamic_ncols=True,
-                )
-        for s in range(first_p):
-            self.shift_path.append(s)
-            self._search(0, initial_mask & self.bit_tables[0][s])
-            self.shift_path.pop()
-        if cfg.SHOW_PROGRESS:
-            self.pbar.close()
+            )
+        try:
+            for s in range(first_p):
+                self.shift_path.append(s)
+                self._search(0, initial_mask & self.bit_tables[0][s])
+                self.shift_path.pop()
+        finally:
+            if cfg.SHOW_PROGRESS:
+                self.pbar.close()
 
         self.save_best_paths()
 
