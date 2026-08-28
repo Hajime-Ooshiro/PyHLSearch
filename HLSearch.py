@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple
 import time
+from collections import OrderedDict
 from tqdm import tqdm
 import Config as cfg
 
@@ -17,7 +18,8 @@ from cli_common import build_parser, ResolvedConfig, setup_logging
 logger = logging.getLogger(__name__)
 
 # bit_table キャッシュ: (primes_tuple, cols) -> bit_tables
-_bit_table_cache: dict = {}
+_BIT_TABLE_CACHE_SIZE = 4
+_bit_table_cache: OrderedDict[tuple[tuple[int, ...], int], List[List[int]]] = OrderedDict()
 
 
 def _validate_primes(primes: List[int]) -> None:
@@ -40,29 +42,34 @@ def build_bit_tables(primes: List[int], cols: int) -> List[List[int]]:
     
     キャッシュ機構により、同じ素数リストと cols では計算を再利用する。
     """
+    if cols < 0:
+        raise ValueError("cols は0以上で指定してください")
+    _validate_primes(primes)
     cache_key = (tuple(primes), cols)
     if cache_key in _bit_table_cache:
+        _bit_table_cache.move_to_end(cache_key)
         logger.debug("bit_table キャッシュヒット: primes=%d個, cols=%d", len(primes), cols)
         return _bit_table_cache[cache_key]
     
     logger.debug("bit_table 生成開始: primes=%d個, cols=%d", len(primes), cols)
-    all_ones = (1 << cols) - 1
     tables = []
     for p in primes:
+        full_blocks, remainder = divmod(cols, p)
+        block_mask = (1 << p) - 1
+        repeat_mask = (1 << (p * full_blocks)) - 1 if full_blocks else 0
         p_shifts = []
         for s in range(p):
-            # (idx - s) % p == 1 となるビットを 0 にする
-            # idx = s + 1 + k * p
-            drop_mask = 0
-            start_idx = s + 1
-            while start_idx <= 0:
-                start_idx += p
-            for idx in range(start_idx, cols + 1, p):
-                drop_mask |= 1 << (idx - 1)
-            p_shifts.append(all_ones ^ drop_mask)
+            # 列idx(1始まり)ではなくビット位置(0始まり)の剰余sを除外する。
+            pattern = block_mask ^ (1 << s)
+            full_mask = pattern * (repeat_mask // block_mask) if full_blocks else 0
+            partial_mask = pattern & ((1 << remainder) - 1)
+            p_shifts.append(full_mask | (partial_mask << (p * full_blocks)))
         tables.append(p_shifts)
     
     _bit_table_cache[cache_key] = tables
+    _bit_table_cache.move_to_end(cache_key)
+    while len(_bit_table_cache) > _BIT_TABLE_CACHE_SIZE:
+        _bit_table_cache.popitem(last=False)
     logger.debug("bit_table 生成完了 (キャッシュ保存)")
     return tables
 
