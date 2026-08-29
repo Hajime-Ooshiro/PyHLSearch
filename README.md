@@ -35,6 +35,16 @@ cd your-repo-name
 
 ## 変更履歴 (Changelog)
 <details>
+<summary><b>v1.0.3</b> (2026-08-27)</summary>
+
+### 追加 (Added)
+- 探索状態クラスState使用
+- 事前計算
+- Config.py 削除
+
+</details>
+
+<details>
 <summary><b>v1.0.2</b> (2026-08-27)</summary>
 
 ### 追加 (Added)
