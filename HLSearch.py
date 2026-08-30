@@ -16,6 +16,7 @@ NumPy ベースの bitmask/shift table で高速化するための実装を提�
 """
 
 import argparse
+import ast
 import logging
 import logging.handlers
 import os
@@ -140,7 +141,7 @@ def shift_array(arr: NDArray[np.bool_], k: int) -> NDArray[np.bool_]:
     return result
  
 
-def build_base_rows(primes: Sequence[int]) -> NDArray[np.bool_]:
+def build_base_rows(primes: Sequence[int], cols: int = COLS) -> NDArray[np.bool_]:
     """指定した素数リストから各階層の基底行を生成する。
 
     各要素は `bool((idx % p) == 1)` を保持し、探索では「0かどうか」だけを
@@ -149,14 +150,16 @@ def build_base_rows(primes: Sequence[int]) -> NDArray[np.bool_]:
 
     Args:
         primes: 基底行を作る素数一覧。
+        cols: 配列の列数。
 
     Returns:
-        shape=(len(primes), COLS) の bool 配列。
+        shape=(len(primes), cols) の bool 配列。
     """
-    return np.array([(IDX % p == 1) for p in primes])
+    idx = np.arange(1, cols + 1)
+    return np.array([(idx % p == 1) for p in primes])
 
 
-def build_shift_table(primes: Sequence[int]) -> list[NDArray[np.bool_]]:
+def build_shift_table(primes: Sequence[int], cols: int = COLS) -> list[NDArray[np.bool_]]:
     """各レベルごとのシフト候補テーブルを事前生成する。
 
     これにより探索時に毎回 `shift_array()` と `~` 演算を行わず、
@@ -164,16 +167,17 @@ def build_shift_table(primes: Sequence[int]) -> list[NDArray[np.bool_]]:
 
     Args:
         primes: 使用する素数のリスト。
+        cols: 列数。
 
     Returns:
         `shift_table[level][shift]` が、level 段目におけるシフト値 `shift`
         に対応する補集合行を表す bool 配列。
     """
-    base_rows = build_base_rows(primes)
+    base_rows = build_base_rows(primes, cols)
     shift_table: list[NDArray[np.bool_]] = []
     for level, p in enumerate(primes):
         row = base_rows[level]
-        shifted_complement = np.empty((p, COLS), dtype=bool)
+        shifted_complement = np.empty((p, cols), dtype=bool)
         for k in range(p):
             shifted_complement[k] = ~shift_array(row, k)
         shift_table.append(shifted_complement)
@@ -206,9 +210,12 @@ class State:
         "start_time",
         "node_count",
         "pbar",
+        "checkpoint_path",
+        "checkpoint_interval",
+        "_stack_state",
     )
 
-    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], limit: int | None = None, max_depth: int | None = None, target: int | None = None) -> None:
+    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], limit: int | None = None, max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000) -> None:
         if isinstance(config, SearchConfig):
             self.config = config
             primes = config.primes
@@ -225,12 +232,14 @@ class State:
         self.key: list[int] = []
         self.primes: Sequence[int] = primes
         self.shift_table: list[NDArray[np.bool_]] = shift_table
-        self.zero_mask: NDArray[np.bool_] = np.ones(COLS, dtype=bool)
+        self.zero_mask: NDArray[np.bool_] = np.ones(self.config.cols, dtype=bool)
         self.max_count: int = 0
         self.shifts: list[list[int]] = []
         self.results: int = 0
         self.start_time: float = time.time()
         self.node_count: int = 0
+        self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
+        self.checkpoint_interval = checkpoint_interval
         self.pbar = tqdm(
             desc="search",
             unit="node",
@@ -238,6 +247,81 @@ class State:
             dynamic_ncols=True,
             mininterval=self.config.progress_mininterval if isinstance(self.config, SearchConfig) else PROGRESS_MININTERVAL,
         )
+
+    def _mask_to_int(self, mask: NDArray[np.bool_]) -> int:
+        if mask.size == 0:
+            return 0
+        bits = np.asarray(mask, dtype=np.uint8)
+        return int(np.dot(bits, 1 << np.arange(mask.size, dtype=np.int64)))
+
+    def _int_to_mask(self, value: int, size: int) -> NDArray[np.bool_]:
+        mask = np.zeros(size, dtype=bool)
+        for i in range(size):
+            if (value >> i) & 1:
+                mask[i] = True
+        return mask
+
+    def _save_checkpoint(self) -> None:
+        if self.checkpoint_path is None:
+            return
+        path = Path(self.checkpoint_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stack_payload = []
+        for level, base_mask, next_idx, next_p in self._stack_state:
+            stack_payload.append({
+                "level": int(level),
+                "base_mask": self._mask_to_int(base_mask),
+                "next_idx": int(next_idx),
+                "next_p": int(next_p),
+            })
+
+        saved = {
+            "version": 1,
+            "key": list(self.key),
+            "zero_mask": self._mask_to_int(self.zero_mask),
+            "max_count": self.max_count,
+            "results": self.results,
+            "shifts": self.shifts,
+            "node_count": self.node_count,
+            "stack": stack_payload,
+        }
+        with path.open("w", encoding="utf-8") as f:
+            f.write(f"version={saved['version']}\n")
+            f.write(f"key={saved['key']}\n")
+            f.write(f"zero_mask={saved['zero_mask']}\n")
+            f.write(f"max_count={saved['max_count']}\n")
+            f.write(f"results={saved['results']}\n")
+            f.write(f"node_count={saved['node_count']}\n")
+            f.write(f"shifts={saved['shifts']}\n")
+            f.write(f"stack={saved['stack']}\n")
+
+    def _load_checkpoint(self, checkpoint_path: str | os.PathLike[str]) -> None:
+        path = Path(checkpoint_path)
+        if not path.exists():
+            return
+        with path.open("r", encoding="utf-8") as f:
+            text = f.read()
+        if not text:
+            return
+        lines = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+        if int(lines.get("version", 0)) != 1:
+            raise ValueError(f"unsupported checkpoint version: {lines.get('version')}")
+
+        self.key = ast.literal_eval(lines.get("key", "[]"))
+        self.zero_mask = self._int_to_mask(int(lines.get("zero_mask", 0)), self.config.cols)
+        self.max_count = int(lines.get("max_count", 0))
+        self.results = int(lines.get("results", 0))
+        self.node_count = int(lines.get("node_count", 0))
+        self.shifts = ast.literal_eval(lines.get("shifts", "[]"))
+        raw_stack = ast.literal_eval(lines.get("stack", "[]"))
+        self._stack_state = []
+        for entry in raw_stack:
+            self._stack_state.append((
+                int(entry["level"]),
+                self._int_to_mask(int(entry["base_mask"]), self.config.cols),
+                int(entry["next_idx"]),
+                int(entry["next_p"]),
+            ))
 
     def report_progress(self, force: bool = False) -> None:
         """
@@ -257,6 +341,8 @@ class State:
                 key=list(self.key),
                 refresh=force,
             )
+        if self.checkpoint_path is not None and self.node_count % self.checkpoint_interval == 0:
+            self._save_checkpoint()
 
     def search(self, depth: int) -> None:
         """
@@ -292,23 +378,27 @@ class State:
             探索する階層数(= 使用する素数の個数)。可変。
         """
         key = self.key
-        stack: list[tuple[int, NDArray[np.bool_], Iterator[int]]] = [
-            (0, self.zero_mask, iter(range(self.primes[0])))
-        ]
+        if hasattr(self, "_stack_state") and self._stack_state:
+            stack = [(int(level), np.asarray(base_mask, dtype=bool).copy(), int(next_idx), int(next_p)) for level, base_mask, next_idx, next_p in self._stack_state]
+        else:
+            stack = [(0, self.zero_mask.copy(), 0, self.primes[0])]
+        self._stack_state = [tuple(s) for s in stack]
 
         while stack:
-            level, base_mask, it = stack[-1]
-            try:
-                i = next(it)
-            except StopIteration:
-                # この階層で試せる値を使い切った → 親の階層へbacktrack
+            level, base_mask, next_idx, next_p = stack[-1]
+            if next_idx >= next_p:
                 finished_base_mask = stack.pop()[1]
                 if stack:
                     key.pop()
                     self.zero_mask = stack[-1][1]
                 else:
                     self.zero_mask = finished_base_mask  # 最上位まで戻り切った
+                self._stack_state = [tuple(s) for s in stack]
                 continue
+
+            i = next_idx
+            stack[-1] = (level, base_mask, next_idx + 1, next_p)
+            self._stack_state = [tuple(s) for s in stack]
 
             key.append(i)
             self.node_count += 1
@@ -317,11 +407,9 @@ class State:
             row_complement = self.shift_table[level][i]  # ~row_nonzero(NOT演算済み、事前作成済み)
             node_mask = base_mask & row_complement
             count = int(np.count_nonzero(node_mask))
-            # logger.debug("depth=%d key=%s count=%s", level + 1, key, count)
 
             if count < max(self.limit, self.max_count):
-                # logger.debug(("break", list(key), count))
-                key.pop()  # この枝は打ち切り(子孫を探索しない)、次のiへ
+                key.pop()
                 continue
 
             if level + 1 >= depth:
@@ -332,31 +420,32 @@ class State:
                         self.shifts.clear()
                         self.shifts.append(list(key))
                         self.pbar.write(f"done key={list(key)} count={count}")
-                        # logger.debug(("done", list(key), count))
                     elif count == self.max_count:
                         self.results += 1
                         self.shifts.append(list(key))
-                        # logger.debug(("done", list(key), count))
 
-                key.pop()  # 最深階層に到達、次のiへ
+                key.pop()
                 continue
 
-            # さらに深く探索: 子階層のループをスタックに積んで先に進む
             self.zero_mask = node_mask
-            next_p = self.primes[level + 1]
-            stack.append((level + 1, node_mask, iter(range(next_p))))
+            next_p_child = self.primes[level + 1]
+            stack.append((level + 1, node_mask, 0, next_p_child))
+            self._stack_state = [tuple(s) for s in stack]
 
-    def run(self, depth: int | None = None) -> "State":
+    def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
         """primes[:depth] を使って深さ depth までの探索を実行するエントリポイント"""
         depth_to_use = self.config.depth if depth is None else depth
         if depth_to_use > len(self.primes):
             raise ValueError(f"depth={depth_to_use} が使用可能な素数の個数({len(self.primes)})を超えています")
-
+        if resume_from is not None:
+            self._load_checkpoint(resume_from)
         try:
             self.search(depth_to_use)
             self.report_progress(force=True)
         finally:
             self.pbar.close()
+            if self.checkpoint_path is not None:
+                self._save_checkpoint()
 
         return self
 
@@ -392,6 +481,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="tqdm進捗表示の最短更新間隔(秒)。")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO",
                         help="コンソールに出すログレベル(ログファイルは常にDEBUG)。")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="途中経過をテキスト形式で保存するパス。再開時は --resume を使う。")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="保存済み checkpoint から探索を再開する。")
     return parser.parse_args(argv)
 
 
@@ -431,9 +524,9 @@ if __name__ == "__main__":
     logger.info("HLSearch 開始 (log file: %s)", LOG_PATH)
     logger.info("設定: depth=%d limit=%d max_depth=%d target=%d primes_count=%d", depth, limit, max_depth, target, len(primes))
 
-    shift_table = build_shift_table(primes[:depth])
-    state = State(config, shift_table)
-    result_state = state.run(depth)
+    shift_table = build_shift_table(primes[:depth], cols)
+    state = State(config, shift_table, checkpoint_path=args.checkpoint, checkpoint_interval=max(1, min(10000, max(10, depth * 100))))
+    result_state = state.run(depth, resume_from=args.resume)
 
     logger.info("最大値: %d", result_state.max_count)
     logger.info("該当件数: %d", result_state.results)

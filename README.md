@@ -15,6 +15,17 @@
 - `HLSearch_bitpack.py`: NumPy を使わず `int` のビット演算で処理する軽量版。
 - `HLSearch_Beam.py`: Beam 検索 + GPU/CPU 並列化の実験版。
 
+## 中断・再開
+`HLSearch.py` では探索の途中経過をテキスト checkpoint として保存でき、再開可能です。
+
+```powershell
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --checkpoint resume.txt
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --resume resume.txt
+```
+
+- `--checkpoint`: 途中経過を `resume.txt` のようなファイルへ保存
+- `--resume`: その checkpoint から探索を再開
+
 ## 動作環境
 - Python 3.10 以上
 - NumPy（`HLSearch.py` で必要）
@@ -50,12 +61,15 @@ python HLSearch_bitpack.py --depth 8 --limit 400 --max-depth 249 --target 447
 - `-p, --primes-count`: 先頭 N 個の素数だけ使用
 - `--cols`: 列数
 - `--output`: 結果の出力先ファイル
+- `--checkpoint`: 途中経過を保存する checkpoint ファイル
+- `--resume`: checkpoint から再開
 - `--numba`: `HLSearch_Numba.py` で JIT 有効化
 - `--cuda`: `HLSearch_Numba.py` で CUDA を優先使用
 
 ## 例: 小規模テスト
 ```powershell
 python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt --checkpoint resume.txt
 python HLSearch_Numba.py --numba --depth 3 --cols 50 --limit 0 --output shift_path.txt
 python HLSearch_bitpack.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
 ```
