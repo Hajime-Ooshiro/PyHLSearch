@@ -16,13 +16,13 @@ NumPy ベースの bitmask/shift table で高速化するための実装を提�
 """
 
 import argparse
-import ast
+import json
 import logging
 import logging.handlers
 import os
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,6 +76,24 @@ class SearchConfig:
     postfix_update_interval: int = 10000
     shift_path_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shift_path.txt")
 
+    def __post_init__(self) -> None:
+        """設定値の整合性を早期に検証する(実行時ではなく構築時に失敗させる)。"""
+        if self.cols <= 0:
+            raise ValueError(f"cols は正の整数である必要があります: cols={self.cols}")
+        if self.depth < 0:
+            raise ValueError(f"depth は0以上である必要があります: depth={self.depth}")
+        if self.depth > len(self.primes):
+            raise ValueError(
+                f"depth={self.depth} が primes の要素数({len(self.primes)})を超えています"
+            )
+        if self.limit < 0:
+            raise ValueError(f"limit は0以上である必要があります: limit={self.limit}")
+        if self.postfix_update_interval <= 0:
+            raise ValueError(
+                f"postfix_update_interval は正の整数である必要があります: "
+                f"postfix_update_interval={self.postfix_update_interval}"
+            )
+
 DEFAULT_CONFIG = SearchConfig()
 shift_path_file: str = DEFAULT_CONFIG.shift_path_file
 
@@ -112,19 +130,17 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -
     return log_path
 
 
-COLS: int = 3159
-IDX: NDArray[np.int64] = np.arange(1, COLS + 1)  # range(1, 3160) 
-LIMIT: int = 447
+COLS: int = DEFAULT_CONFIG.cols
+LIMIT: int = DEFAULT_CONFIG.limit
 
-DEPTH: int = 8
-MAX_DEPTH: int = 249
-TARGET: int = 447
-PROGRESS_MININTERVAL: float = 1.0  # tqdm進捗表示の最短更新間隔(秒)
-POSTFIX_UPDATE_INTERVAL: int = 10000
+DEPTH: int = DEFAULT_CONFIG.depth
+MAX_DEPTH: int = DEFAULT_CONFIG.max_depth
+TARGET: int = DEFAULT_CONFIG.target
+PROGRESS_MININTERVAL: float = DEFAULT_CONFIG.progress_mininterval  # tqdm進捗表示の最短更新間隔(秒)
+POSTFIX_UPDATE_INTERVAL: int = DEFAULT_CONFIG.postfix_update_interval
 
 # 2,3,5,7,11,13,...,1579 の素数リスト
 PRIMES: list[int] = generate_primes(1579)
-ROWS: int = len(PRIMES)
 
 def shift_array(arr: NDArray[np.bool_], k: int) -> NDArray[np.bool_]:
     """
@@ -212,22 +228,27 @@ class State:
         "pbar",
         "checkpoint_path",
         "checkpoint_interval",
-        "_stack_state",
+        "_stack",
     )
 
     def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], limit: int | None = None, max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000) -> None:
-        if isinstance(config, SearchConfig):
-            self.config = config
-            primes = config.primes
-            self.limit = config.limit if limit is None else limit
-            self.max_depth = config.max_depth if max_depth is None else max_depth
-            self.target = config.target if target is None else target
-        else:
-            self.config = SearchConfig(primes=config, depth=len(config), limit=LIMIT if limit is None else limit, max_depth=MAX_DEPTH if max_depth is None else max_depth, target=TARGET if target is None else target, cols=COLS)
-            primes = config
-            self.limit = LIMIT if limit is None else limit
-            self.max_depth = MAX_DEPTH if max_depth is None else max_depth
-            self.target = TARGET if target is None else target
+        # SearchConfig 以外(生の primes 列)が渡された場合は、まず SearchConfig に
+        # 正規化してしまう。これにより以降の属性代入を両ケースで共通化でき、
+        # limit/max_depth/target の決定ロジックを二重に書かずに済む。
+        if not isinstance(config, SearchConfig):
+            config = SearchConfig(
+                primes=config,
+                depth=len(config),
+                limit=DEFAULT_CONFIG.limit if limit is None else limit,
+                max_depth=DEFAULT_CONFIG.max_depth if max_depth is None else max_depth,
+                target=DEFAULT_CONFIG.target if target is None else target,
+                cols=COLS,
+            )
+        self.config = config
+        primes = config.primes
+        self.limit = config.limit if limit is None else limit
+        self.max_depth = config.max_depth if max_depth is None else max_depth
+        self.target = config.target if target is None else target
 
         self.key: list[int] = []
         self.primes: Sequence[int] = primes
@@ -240,26 +261,36 @@ class State:
         self.node_count: int = 0
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
         self.checkpoint_interval = checkpoint_interval
+        self._stack: list[list] = []
         self.pbar = tqdm(
             desc="search",
             unit="node",
             unit_scale=True,
             dynamic_ncols=True,
-            mininterval=self.config.progress_mininterval if isinstance(self.config, SearchConfig) else PROGRESS_MININTERVAL,
+            mininterval=self.config.progress_mininterval,
         )
 
     def _mask_to_int(self, mask: NDArray[np.bool_]) -> int:
+        """bool配列をビット列とみなして多倍長整数に変換する。
+
+        以前は `1 << np.arange(mask.size, dtype=np.int64)` で重み配列を作り
+        `np.dot` していたが、mask.size が64を超えると int64 の範囲を超えて
+        符号オーバーフローし、チェックポイントの内容が壊れるバグがあった。
+        `np.packbits` でバイト列化してから Python の多倍長整数に変換すれば
+        サイズに関わらず正しく、かつベクトル化されて高速。
+        """
         if mask.size == 0:
             return 0
-        bits = np.asarray(mask, dtype=np.uint8)
-        return int(np.dot(bits, 1 << np.arange(mask.size, dtype=np.int64)))
+        packed = np.packbits(np.asarray(mask, dtype=bool))
+        return int.from_bytes(packed.tobytes(), byteorder="big")
 
     def _int_to_mask(self, value: int, size: int) -> NDArray[np.bool_]:
-        mask = np.zeros(size, dtype=bool)
-        for i in range(size):
-            if (value >> i) & 1:
-                mask[i] = True
-        return mask
+        """`_mask_to_int` の逆変換。"""
+        if size == 0:
+            return np.zeros(0, dtype=bool)
+        nbytes = (size + 7) // 8
+        packed = np.frombuffer(value.to_bytes(nbytes, byteorder="big"), dtype=np.uint8)
+        return np.unpackbits(packed)[:size].astype(bool)
 
     def _save_checkpoint(self) -> None:
         if self.checkpoint_path is None:
@@ -267,9 +298,10 @@ class State:
         path = Path(self.checkpoint_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         stack_payload = []
-        for level, base_mask, next_idx, next_p in self._stack_state:
+        for level, base_mask, next_idx, next_p in self._stack:
             stack_payload.append({
                 "level": int(level),
+                # 多倍長整数はJSONの数値としてそのままシリアライズ可能。
                 "base_mask": self._mask_to_int(base_mask),
                 "next_idx": int(next_idx),
                 "next_p": int(next_p),
@@ -285,15 +317,12 @@ class State:
             "node_count": self.node_count,
             "stack": stack_payload,
         }
-        with path.open("w", encoding="utf-8") as f:
-            f.write(f"version={saved['version']}\n")
-            f.write(f"key={saved['key']}\n")
-            f.write(f"zero_mask={saved['zero_mask']}\n")
-            f.write(f"max_count={saved['max_count']}\n")
-            f.write(f"results={saved['results']}\n")
-            f.write(f"node_count={saved['node_count']}\n")
-            f.write(f"shifts={saved['shifts']}\n")
-            f.write(f"stack={saved['stack']}\n")
+        # 途中でクラッシュしても既存のチェックポイントを壊さないよう、
+        # 一時ファイルに書いてから rename でatomicに置き換える。
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(saved, f, ensure_ascii=False, indent=2)
+        tmp_path.replace(path)
 
     def _load_checkpoint(self, checkpoint_path: str | os.PathLike[str]) -> None:
         path = Path(checkpoint_path)
@@ -301,27 +330,39 @@ class State:
             return
         with path.open("r", encoding="utf-8") as f:
             text = f.read()
-        if not text:
+        if not text.strip():
             return
-        lines = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
-        if int(lines.get("version", 0)) != 1:
-            raise ValueError(f"unsupported checkpoint version: {lines.get('version')}")
+        try:
+            saved = json.loads(text)
+        except json.JSONDecodeError as exc:
+            # 旧バージョン(key=value形式のテキスト)のチェックポイントを
+            # 読み込もうとした場合に、原因不明のJSONエラーではなく
+            # 何が問題かが分かるメッセージにする。
+            raise ValueError(
+                f"{path} はJSON形式のチェックポイントとして読み込めません。"
+                "旧バージョン(key=value形式)のチェックポイントには対応していません。"
+                "新しい設定で最初から探索をやり直してください。"
+            ) from exc
 
-        self.key = ast.literal_eval(lines.get("key", "[]"))
-        self.zero_mask = self._int_to_mask(int(lines.get("zero_mask", 0)), self.config.cols)
-        self.max_count = int(lines.get("max_count", 0))
-        self.results = int(lines.get("results", 0))
-        self.node_count = int(lines.get("node_count", 0))
-        self.shifts = ast.literal_eval(lines.get("shifts", "[]"))
-        raw_stack = ast.literal_eval(lines.get("stack", "[]"))
-        self._stack_state = []
-        for entry in raw_stack:
-            self._stack_state.append((
+        if saved.get("version") != 1:
+            raise ValueError(f"unsupported checkpoint version: {saved.get('version')}")
+
+        self.key = list(saved.get("key", []))
+        self.zero_mask = self._int_to_mask(int(saved.get("zero_mask", 0)), self.config.cols)
+        self.max_count = int(saved.get("max_count", 0))
+        self.results = int(saved.get("results", 0))
+        self.node_count = int(saved.get("node_count", 0))
+        self.shifts = list(saved.get("shifts", []))
+        raw_stack = saved.get("stack", [])
+        self._stack = [
+            [
                 int(entry["level"]),
                 self._int_to_mask(int(entry["base_mask"]), self.config.cols),
                 int(entry["next_idx"]),
                 int(entry["next_p"]),
-            ))
+            ]
+            for entry in raw_stack
+        ]
 
     def report_progress(self, force: bool = False) -> None:
         """
@@ -353,22 +394,31 @@ class State:
         再帰の深さ)が大きくなると Python の再帰上限(sys.setrecursionlimit)
         や関数呼び出しオーバーヘッドが問題になりうる。
         ここでは再帰呼び出しの代わりに、階層ごとの「ループの途中状態」を
-        自前のスタックに積んで管理することで、同じ探索順序・同じ結果を
-        非再帰(反復)で実現する。
+        自前のスタック `self._stack` に積んで管理することで、同じ探索順序・
+        同じ結果を非再帰(反復)で実現する。
 
-        スタックの各要素は (level, base_mask, iterator) の3つ組:
+        `self._stack` はインスタンス属性として持たせているため、
+        `_save_checkpoint`/`_load_checkpoint` からもそのまま読み書きできる。
+        そのため、探索の全ノードごとに別のコピーへ同期する必要はなく、
+        チェックポイントを実際に保存するタイミング(`checkpoint_interval`
+        ノードに1回)でだけ JSON へシリアライズすればよい。
+
+        スタックの各要素は [level, base_mask, next_idx, next_p] の
+        4要素からなる可変(list)フレーム:
             level      : このループで値を決める階層(0-indexed)。
                          元の再帰版での level = len(key) - 1 に対応。
             base_mask  : この階層のどの枝を試す場合でも共通して使う
                          「親までの zero_mask」。元の再帰版での
                          prev_mask(= self.zero_mask の呼び出し前の値)
                          に対応する。
-            iterator   : range(primes[level]) の残り候補値を返す
-                         イテレータ。元の re-entrant な `for i in range(...)`
+            next_idx   : 次に試す `range(next_p)` 上のインデックス。
+                         元の再帰版の re-entrant な `for i in range(...)`
                          ループの「途中状態」をこれで表現する。
+            next_p     : この階層で使う素数(= primes[level])。
+                         next_idx の終了条件として保持している。
 
         1つの節点(= key の1要素)を「探索し尽くして親に戻る」タイミングは、
-        自分の子階層のイテレータが尽きた(StopIteration)瞬間として検出し、
+        自分の子階層で next_idx が next_p に達した瞬間として検出し、
         そこで元の再帰版の「self.zero_mask = prev_mask; return」に相当する
         後始末(zero_maskの復元・keyのpop)を行う。
 
@@ -378,14 +428,13 @@ class State:
             探索する階層数(= 使用する素数の個数)。可変。
         """
         key = self.key
-        if hasattr(self, "_stack_state") and self._stack_state:
-            stack = [(int(level), np.asarray(base_mask, dtype=bool).copy(), int(next_idx), int(next_p)) for level, base_mask, next_idx, next_p in self._stack_state]
-        else:
-            stack = [(0, self.zero_mask.copy(), 0, self.primes[0])]
-        self._stack_state = [tuple(s) for s in stack]
+        stack = self._stack
+        if not stack:
+            stack.append([0, self.zero_mask.copy(), 0, self.primes[0]])
 
         while stack:
-            level, base_mask, next_idx, next_p = stack[-1]
+            frame = stack[-1]
+            level, base_mask, next_idx, next_p = frame
             if next_idx >= next_p:
                 finished_base_mask = stack.pop()[1]
                 if stack:
@@ -393,44 +442,58 @@ class State:
                     self.zero_mask = stack[-1][1]
                 else:
                     self.zero_mask = finished_base_mask  # 最上位まで戻り切った
-                self._stack_state = [tuple(s) for s in stack]
                 continue
 
             i = next_idx
-            stack[-1] = (level, base_mask, next_idx + 1, next_p)
-            self._stack_state = [tuple(s) for s in stack]
+            frame[2] = next_idx + 1  # 同じフレームをその場で更新(コピー不要)
 
             key.append(i)
             self.node_count += 1
-            self.report_progress()
 
-            row_complement = self.shift_table[level][i]  # ~row_nonzero(NOT演算済み、事前作成済み)
-            node_mask = base_mask & row_complement
-            count = int(np.count_nonzero(node_mask))
+            # report_progress()(チェックポイント保存を含む)は、
+            # key と stack の対応関係が「len(key) == len(stack) - 1」に
+            # 揃っているタイミングでしか呼んではいけない。
+            # 枝刈り/葉ノード判定/子階層プッシュのどの分岐を取るかが
+            # 確定する前(= key.append 直後)に呼んでしまうと、
+            # 「i を試している最中」という中途半端な状態のまま
+            # チェックポイントに保存されてしまい、再開時に stack 側の
+            # next_idx だけが1つ先に進んだ不整合な状態から再開してしまう
+            # (key が本来ポップされるべきだったエントリを残したまま
+            # 際限なく伸び続けるバグになる)。
+            # そのため、分岐の結果が確定した直後(continue する直前、
+            # または子階層をpushした直後)に必ず1回だけ呼ぶよう
+            # try/finally で保証する。
+            try:
+                row_complement = self.shift_table[level][i]  # ~row_nonzero(NOT演算済み、事前作成済み)
+                node_mask = base_mask & row_complement
+                count = int(np.count_nonzero(node_mask))
 
-            if count < max(self.limit, self.max_count):
-                key.pop()
-                continue
+                if count < max(self.limit, self.max_count):
+                    key.pop()
+                    continue
 
-            if level + 1 >= depth:
-                if not (depth == self.max_depth and count > self.target):
-                    if count > self.max_count:
-                        self.max_count = count
-                        self.results = 1
-                        self.shifts.clear()
-                        self.shifts.append(list(key))
-                        self.pbar.write(f"done key={list(key)} count={count}")
-                    elif count == self.max_count:
-                        self.results += 1
-                        self.shifts.append(list(key))
+                if level + 1 >= depth:
+                    if not (depth == self.max_depth and count > self.target):
+                        if count > self.max_count:
+                            self.max_count = count
+                            self.results = 1
+                            self.shifts.clear()
+                            self.shifts.append(list(key))
+                            message = f"done key={list(key)} count={count}"
+                            self.pbar.write(message)
+                            logger.info(message)  # ログファイルにも残す(pbar.writeだけだと画面にしか出ない)
+                        elif count == self.max_count:
+                            self.results += 1
+                            self.shifts.append(list(key))
 
-                key.pop()
-                continue
+                    key.pop()
+                    continue
 
-            self.zero_mask = node_mask
-            next_p_child = self.primes[level + 1]
-            stack.append((level + 1, node_mask, 0, next_p_child))
-            self._stack_state = [tuple(s) for s in stack]
+                self.zero_mask = node_mask
+                next_p_child = self.primes[level + 1]
+                stack.append([level + 1, node_mask, 0, next_p_child])
+            finally:
+                self.report_progress()
 
     def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
         """primes[:depth] を使って深さ depth までの探索を実行するエントリポイント"""
@@ -482,7 +545,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO",
                         help="コンソールに出すログレベル(ログファイルは常にDEBUG)。")
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="途中経過をテキスト形式で保存するパス。再開時は --resume を使う。")
+                        help="途中経過をJSON形式で保存するパス。再開時は --resume を使う。")
     parser.add_argument("--resume", type=str, default=None,
                         help="保存済み checkpoint から探索を再開する。")
     return parser.parse_args(argv)
@@ -494,7 +557,7 @@ if __name__ == "__main__":
     args = parse_args(argv)
 
     base = os.path.dirname(os.path.abspath(__file__))
-    LOG_PATH = setup_logging(base)
+    LOG_PATH = setup_logging(base, console_level=args.log_level)
 
     depth = args.depth
     limit = args.limit
@@ -503,8 +566,6 @@ if __name__ == "__main__":
     cols = args.cols
     primes = PRIMES if args.primes_count is None else PRIMES[: args.primes_count]
     output_path = args.output
-
-    PROGRESS_MININTERVAL = args.mininterval
 
     if depth > len(primes):
         raise ValueError(f"depth={depth} が使用可能な素数の個数({len(primes)})を超えています")
