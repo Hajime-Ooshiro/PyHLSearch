@@ -7,20 +7,39 @@
 - `State` クラスで反復DFSを実装し、再帰の制限やコールスタックを避ける。
 - 事前計算したシフトテーブルで高速化し、探索条件に基づいて枝刈りを行う。
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
+- 実装には `HLSearch.py`（NumPy版）、`HLSearch_Numba.py`（Numba版）、`HLSearch_bitpack.py`（純Python bit-packed版）がある。
+
+## 実装一覧
+- `HLSearch.py`: 既定の NumPy ベース実装。標準運用向け。
+- `HLSearch_Numba.py`: Numba JIT / CUDA 対応版。高速度化を狙う。
+- `HLSearch_bitpack.py`: NumPy を使わず `int` のビット演算で処理する軽量版。
+- `HLSearch_Beam.py`: Beam 検索 + GPU/CPU 並列化の実験版。
 
 ## 動作環境
 - Python 3.10 以上
-- numpy
+- NumPy（`HLSearch.py` で必要）
 - tqdm
+- Numba（`HLSearch_Numba.py` を使う場合）
 
 ## インストール
 ```powershell
-python -m pip install numpy tqdm
+python -m pip install numpy tqdm numba
 ```
 
 ## 実行方法
+### 基本実行（NumPy版）
 ```powershell
 python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
+```
+
+### Numba版
+```powershell
+python HLSearch_Numba.py --numba --depth 8 --limit 400 --max-depth 249 --target 447
+```
+
+### Bit-packed版
+```powershell
+python HLSearch_bitpack.py --depth 8 --limit 400 --max-depth 249 --target 447
 ```
 
 よく使うオプション:
@@ -31,10 +50,14 @@ python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
 - `-p, --primes-count`: 先頭 N 個の素数だけ使用
 - `--cols`: 列数
 - `--output`: 結果の出力先ファイル
+- `--numba`: `HLSearch_Numba.py` で JIT 有効化
+- `--cuda`: `HLSearch_Numba.py` で CUDA を優先使用
 
 ## 例: 小規模テスト
 ```powershell
 python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch_Numba.py --numba --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch_bitpack.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
 ```
 
 ## テスト
@@ -43,6 +66,20 @@ pytest -q
 ```
 
 ## 変更履歴
+<details>
+<summary><b>v1.0.5</b> (2026-08-30)</summary>
+
+### 追加 (Added)
+- `HLSearch_Numba.py` を追加（Numba/JIT ベース高速化）
+- `HLSearch_bitpack.py` を追加（NumPy 非依存 bit-packed 実装）
+- `HLSearch_Beam.py` で GPU/CPU ビーム探索を整理
+
+### 変更 (Changed)
+- README に複数実装の利用方法を追記
+- 実行手順と依存関係を更新
+
+</details>
+
 <details>
 <summary><b>v1.0.4</b> (2026-08-30)</summary>
 
