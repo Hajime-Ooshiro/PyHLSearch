@@ -21,7 +21,7 @@ import logging.handlers
 import os
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -178,6 +178,314 @@ def build_shift_table(primes: Sequence[int]) -> list[NDArray[np.bool_]]:
             shifted_complement[k] = ~shift_array(row, k)
         shift_table.append(shifted_complement)
     return shift_table
+
+
+# --- CUDA / parallel backend support ---
+BeamWidthSpec = int | list[int] | Callable[[int], int]
+
+
+def build_bit_tables_packed(primes: Sequence[int], cols: int) -> tuple[list[NDArray[np.uint64]], int]:
+    """各レベルの bitmask を packed uint64 配列へ変換し、CUDAで並列計算しやすくする。
+
+    これにより `beam_masks[b] & table[s]` を 1 ワード単位で処理できる。
+    """
+    n_words = (cols + 63) // 64
+    j = np.arange(cols, dtype=np.int64)
+    tables: list[NDArray[np.uint64]] = []
+    for p in primes:
+        residues = j % p
+        s_arr = np.arange(p, dtype=np.int64)[:, None]
+        keep = residues[None, :] != s_arr
+
+        packed = np.zeros((p, n_words), dtype=np.uint64)
+        for w in range(n_words):
+            lo = w * 64
+            hi = min(lo + 64, cols)
+            if lo >= cols:
+                break
+            chunk = keep[:, lo:hi].astype(np.uint64)
+            weights = np.uint64(1) << np.arange(hi - lo, dtype=np.uint64)
+            packed[:, w] = (chunk * weights).sum(axis=1, dtype=np.uint64)
+        tables.append(packed)
+    return tables, n_words
+
+
+def popcount64_numpy(x: NDArray[np.uint64]) -> NDArray[np.int64]:
+    """uint64 配列の各要素に対する popcount を計算する。"""
+    x = x.astype(np.uint64)
+    x = x - ((x >> np.uint64(1)) & np.uint64(0x5555555555555555))
+    x = (x & np.uint64(0x3333333333333333)) + ((x >> np.uint64(2)) & np.uint64(0x3333333333333333))
+    x = (x + (x >> np.uint64(4))) & np.uint64(0x0F0F0F0F0F0F0F0F)
+    x = (x * np.uint64(0x0101010101010101)) >> np.uint64(56)
+    return x.astype(np.int64)
+
+
+class CPUBackend:
+    """NumPy で並列化した候補スコア計算。"""
+
+    name = "cpu(numpy)"
+
+    def __init__(self, tables: list[NDArray[np.uint64]], n_words: int):
+        self.tables = tables
+        self.n_words = n_words
+
+    def score_all(self, beam_masks: NDArray[np.uint64], level: int) -> NDArray[np.int64]:
+        table = self.tables[level]
+        anded = beam_masks[:, None, :] & table[None, :, :]
+        counts = popcount64_numpy(anded).sum(axis=-1)
+        return counts
+
+    def gather_masks(self, beam_masks: NDArray[np.uint64], level: int, b_idx: NDArray[np.int64], s_idx: NDArray[np.int64]) -> NDArray[np.uint64]:
+        table = self.tables[level]
+        return beam_masks[b_idx] & table[s_idx]
+
+
+_CUDA_KERNEL_SRC = r"""
+extern "C" __global__
+void score_kernel(
+    const unsigned long long* __restrict__ beam_masks,
+    const unsigned long long* __restrict__ table,
+    long long* __restrict__ out_counts,
+    int n_words, int P, int B)
+{
+    extern __shared__ unsigned long long shared_beam[];
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    for (int w = threadIdx.x; w < n_words; w += blockDim.x) {
+        shared_beam[w] = beam_masks[(size_t)b * n_words + w];
+    }
+    __syncthreads();
+
+    for (int s = blockIdx.y * blockDim.x + threadIdx.x; s < P; s += gridDim.y * blockDim.x) {
+        const unsigned long long* row = table + (size_t)s * n_words;
+        long long cnt = 0;
+        for (int w = 0; w < n_words; ++w) {
+            cnt += __popcll(shared_beam[w] & row[w]);
+        }
+        out_counts[(size_t)b * P + s] = cnt;
+    }
+}
+"""
+
+
+class GPUBackend:
+    """CuPy/CUDA を使って候補スコア計算を GPU 上で並列化する。"""
+
+    name = "cuda(cupy)"
+
+    def __init__(self, tables_np: list[NDArray[np.uint64]], n_words: int, block_size: int = 128):
+        import cupy as cp
+
+        self.cp = cp
+        self.n_words = n_words
+        self.block_size = block_size
+        self.tables = [cp.asarray(table) for table in tables_np]
+        self._kernel = cp.RawKernel(_CUDA_KERNEL_SRC, "score_kernel")
+
+    def score_all(self, beam_masks, level: int):
+        cp = self.cp
+        table = self.tables[level]
+        B = beam_masks.shape[0]
+        P = table.shape[0]
+        out = cp.empty((B, P), dtype=cp.int64)
+
+        block = self.block_size
+        grid_y = max(1, (P + block - 1) // block)
+        shared_bytes = self.n_words * 8
+
+        self._kernel(
+            (B, grid_y),
+            (block,),
+            (beam_masks, table, out, np.int32(self.n_words), np.int32(P), np.int32(B)),
+            shared_mem=shared_bytes,
+        )
+        return out
+
+    def gather_masks(self, beam_masks, level: int, b_idx, s_idx):
+        table = self.tables[level]
+        return beam_masks[b_idx] & table[s_idx]
+
+
+class BeamSearcherGPU:
+    """GPU/CPU を切り替え可能なビーム探索器。"""
+
+    def __init__(
+        self,
+        primes: Sequence[int],
+        depth: int,
+        limit: int,
+        target: int,
+        max_depth: int,
+        cols: int,
+        output_file: str | os.PathLike[str],
+        beam_width: int | list[int] | Callable[[int], int] = 100,
+        save_all_best: bool = False,
+        use_gpu: bool = True,
+    ):
+        self.primes = list(primes)[:depth]
+        self.depth = depth
+        self.limit = limit
+        self.target = target
+        self.max_depth = max_depth
+        self.cols = cols
+        self.output_file = Path(output_file)
+        self.beam_width = beam_width
+        self.save_all_best = save_all_best
+
+        tables_np, n_words = build_bit_tables_packed(self.primes, cols)
+        self.n_words = n_words
+
+        self.backend = None
+        if use_gpu:
+            try:
+                self.backend = GPUBackend(tables_np, n_words)
+            except ImportError:
+                logger.warning("cupy が見つからないため CPU(numpy) backend にフォールバックします")
+        if self.backend is None:
+            self.backend = CPUBackend(tables_np, n_words)
+
+        self.xp = self.backend.cp if isinstance(self.backend, GPUBackend) else np
+        self.max_count = 0
+        self.results = 0
+        self.nodes_searched = 0
+        self.best_paths: list[list[int]] = []
+
+    def _resolve_beam_width(self, level: int) -> int:
+        bw = self.beam_width
+        if callable(bw):
+            width = bw(level)
+        elif isinstance(bw, (list, tuple)):
+            width = bw[level] if level < len(bw) else bw[-1]
+        else:
+            width = bw
+        if width < 1:
+            raise ValueError(f"beam_width は1以上である必要があります (level={level}, width={width})")
+        return width
+
+    def _row_popcount(self, table_rows):
+        if isinstance(self.backend, GPUBackend):
+            cp = self.backend.cp
+            x = table_rows.astype(cp.uint64)
+            x = x - ((x >> cp.uint64(1)) & cp.uint64(0x5555555555555555))
+            x = (x & cp.uint64(0x3333333333333333)) + ((x >> cp.uint64(2)) & cp.uint64(0x3333333333333333))
+            x = (x + (x >> cp.uint64(4))) & cp.uint64(0x0F0F0F0F0F0F0F0F)
+            x = (x * cp.uint64(0x0101010101010101)) >> cp.uint64(56)
+            return x.astype(cp.int64).sum(axis=-1)
+        return popcount64_numpy(table_rows).sum(axis=-1)
+
+    def _nonzero(self, mask):
+        xp = self.backend.cp if isinstance(self.backend, GPUBackend) else np
+        return xp.where(mask)[0]
+
+    def _topk_indices(self, scores, k):
+        xp = self.backend.cp if isinstance(self.backend, GPUBackend) else np
+        k = min(k, scores.shape[0])
+        if k <= 0:
+            return xp.empty(0, dtype=np.int64)
+        part = xp.argpartition(-scores, k - 1)[:k]
+        order = xp.argsort(-scores[part])
+        return part[order]
+
+    def _select_topk(self, scores, masks, shifts, k):
+        xp = self.backend.cp if isinstance(self.backend, GPUBackend) else np
+        idx = self._topk_indices(scores, k)
+        return scores[idx], masks[idx], shifts[idx]
+
+    def _to_cpu(self, arr) -> NDArray[np.int64] | NDArray[np.uint64]:
+        if isinstance(self.backend, GPUBackend):
+            return self.backend.cp.asnumpy(arr)
+        return np.asarray(arr)
+
+    def run(self) -> "BeamSearcherGPU":
+        import time
+
+        xp = self.xp
+        start_time = time.time()
+
+        first_p = self.primes[0]
+        table0 = self.backend.tables[0]
+        counts0 = self._row_popcount(table0)
+
+        self.nodes_searched += first_p
+        valid = counts0 >= self.limit
+        idx_valid = xp.where(valid)[0]
+
+        scores = counts0[idx_valid]
+        masks = table0[idx_valid]
+        shifts = idx_valid
+
+        beam_scores, beam_masks, beam_shifts = self._select_topk(scores, masks, shifts, self._resolve_beam_width(0))
+        parents_per_level: list[NDArray[np.int64]] = [np.full(len(beam_shifts), -1, dtype=np.int64)]
+        shifts_per_level: list[NDArray[np.int64]] = [self._to_cpu(beam_shifts)]
+
+        for level in range(1, self.depth):
+            B = beam_masks.shape[0]
+            P = self.primes[level]
+            is_last_level = (level + 1 >= self.depth)
+
+            all_counts = self.backend.score_all(beam_masks, level)
+            self.nodes_searched += B * P
+
+            flat = all_counts.reshape(-1)
+            valid_mask = flat >= self.limit
+            if is_last_level and self.depth == self.max_depth:
+                valid_mask &= flat <= self.target
+
+            flat_idx = self._nonzero(valid_mask)
+            if flat_idx.shape[0] == 0:
+                logger.warning("ビームが空になりました (level=%d)。探索を打ち切ります。", level)
+                break
+
+            flat_scores = flat[flat_idx]
+            width = self._resolve_beam_width(level)
+            top_local = self._topk_indices(flat_scores, width)
+            sel_flat_idx = flat_idx[top_local]
+            sel_scores = flat_scores[top_local]
+
+            b_idx = sel_flat_idx // P
+            s_idx = sel_flat_idx % P
+
+            next_masks = self.backend.gather_masks(beam_masks, level, b_idx, s_idx)
+
+            beam_scores, beam_masks = sel_scores, next_masks
+            parents_per_level.append(self._to_cpu(b_idx))
+            shifts_per_level.append(self._to_cpu(s_idx))
+
+        final_scores = self._to_cpu(beam_scores)
+        if final_scores.size > 0:
+            self.max_count = int(final_scores.max())
+            best_local = np.where(final_scores == self.max_count)[0]
+            self.results = int(best_local.size)
+
+            n_levels = len(shifts_per_level)
+            take = best_local if self.save_all_best else best_local[:1]
+            for local_idx in take:
+                path: list[int] = []
+                cur = int(local_idx)
+                for lv in range(n_levels - 1, -1, -1):
+                    path.append(int(shifts_per_level[lv][cur]))
+                    cur = int(parents_per_level[lv][cur])
+                path.reverse()
+                self.best_paths.append(path)
+
+        self.output_file.parent.mkdir(parents=True, exist_ok=True)
+        with self.output_file.open("w", encoding="utf-8") as f:
+            f.write(f"max_count:{self.max_count}\n")
+            f.write(f"results_count:{self.results}\n")
+            for path in self.best_paths:
+                f.write(f"{path}\n")
+
+        elapsed = time.time() - start_time
+        logger.info(
+            "GPUビーム探索完了: 所要時間=%.2f秒, 探索ノード数=%d (%.2f nodes/s), backend=%s",
+            elapsed,
+            self.nodes_searched,
+            self.nodes_searched / max(elapsed, 1e-6),
+            self.backend.name,
+        )
+        return self
+
 
 class State:
     """探索処理の状態を保持し、反復 DFS を実行する。
@@ -392,6 +700,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="tqdm進捗表示の最短更新間隔(秒)。")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO",
                         help="コンソールに出すログレベル(ログファイルは常にDEBUG)。")
+    parser.add_argument("--gpu", action="store_true",
+                        help="CUDA/CuPy バックエンドを優先して使う(利用できない場合は自動で CPU にフォールバック)。")
     return parser.parse_args(argv)
 
 
@@ -431,19 +741,33 @@ if __name__ == "__main__":
     logger.info("HLSearch 開始 (log file: %s)", LOG_PATH)
     logger.info("設定: depth=%d limit=%d max_depth=%d target=%d primes_count=%d", depth, limit, max_depth, target, len(primes))
 
-    shift_table = build_shift_table(primes[:depth])
-    state = State(config, shift_table)
-    result_state = state.run(depth)
+    if args.gpu:
+        result_state = BeamSearcherGPU(
+            primes=primes,
+            depth=depth,
+            limit=limit,
+            target=target,
+            max_depth=max_depth,
+            cols=cols,
+            output_file=output_path,
+            beam_width=100,
+            use_gpu=True,
+        ).run()
+    else:
+        shift_table = build_shift_table(primes[:depth])
+        state = State(config, shift_table)
+        result_state = state.run(depth)
 
     logger.info("最大値: %d", result_state.max_count)
     logger.info("該当件数: %d", result_state.results)
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as f:
-        f.write(f"max_count:{result_state.max_count}\n")
-        f.write(f"results:{result_state.results}\n")
-        for shift in result_state.shifts:
-            f.write(f"{shift}\n")
+    if not args.gpu:
+        with out_path.open("w", encoding="utf-8") as f:
+            f.write(f"max_count:{result_state.max_count}\n")
+            f.write(f"results:{result_state.results}\n")
+            for shift in result_state.shifts:
+                f.write(f"{shift}\n")
 
     logger.info("HLSearch 終了")
