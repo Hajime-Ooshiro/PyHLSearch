@@ -1,46 +1,66 @@
-# プロジェクト名
+# HLSearch
 
-[PyHLSearch ハーディ・リトルウッドの第２予想の反例の探索プログラム]
+ハーディ・リトルウッドの第2予想に関する探索プログラム。
 
-## 主な機能
+## 概要
+- 2 から 1579 の素数を使い、各階層でのシフト候補を探索する。
+- `State` クラスで反復DFSを実装し、再帰の制限やコールスタックを避ける。
+- 事前計算したシフトテーブルで高速化し、探索条件に基づいて枝刈りを行う。
+- 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
 
-- **機能1**: プログラムを起動すると、演算結果をprint文で画面に出力する。
-- **機能2**: 2から1579の素数の配列の行を動かして全部の列が０になる個数を数える。
-- **機能3**: 素数が素数の間隔で並んだ横3159, 縦249の配列である。
+## 動作環境
+- Python 3.10 以上
+- numpy
+- tqdm
 
-## 動作環境・必須ツール
-
-- **Python**: 3.10 以上
-- その他の依存ライブラリ（`requirements.txt` に記載）
-
-## セットアップ & 実行方法
+## インストール
 ```powershell
-cd HLSearch
-python HLSearch.py
+python -m pip install numpy tqdm
 ```
 
-テストは各プロジェクトのディレクトリから実行してください。ワークスペース直下には
-複数の実装（`HLSearch_Beam`、`HLSearch_Numba` など）が存在し、同名のテストモジュールが
-あるためです。
-
+## 実行方法
 ```powershell
-cd HLSearch
-pytest
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
 ```
 
-### 1. リポジトリのクローン
-```bash
-git clone [https://github.com/Hajime-Ooshiro/HLSearch.git](https://github.com/Hajime-Ooshiro/PyHLSearch.git)
-cd your-repo-name
+よく使うオプション:
+- `-d, --depth`: 探索する深さ
+- `-l, --limit`: 枝刈りの下限
+- `--max-depth`: 最大深さ
+- `-t, --target`: 最大深さ時の目標値
+- `-p, --primes-count`: 先頭 N 個の素数だけ使用
+- `--cols`: 列数
+- `--output`: 結果の出力先ファイル
 
-## 変更履歴 (Changelog)
+## 例: 小規模テスト
+```powershell
+python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+```
+
+## テスト
+```powershell
+pytest -q
+```
+
+## 変更履歴
+<details>
+<summary><b>v1.0.4</b> (2026-08-30)</summary>
+
+### 変更 (Changed)
+- `PRIMES` をハードコードから `generate_primes()` に変更
+- `SearchConfig` に設定を集約
+- `Config.py` を削除し、本体とテストを整理
+- `FastSearcher` / `build_bit_tables` を役割の明確な `State` ベースへ整理
+
+</details>
+
 <details>
 <summary><b>v1.0.3</b> (2026-08-27)</summary>
 
 ### 追加 (Added)
-- 探索状態クラスState使用
-- 事前計算
-- Config.py 削除
+- 探索状態クラス `State` を使用
+- 事前計算を導入
+- `Config.py` を削除
 
 </details>
 
@@ -48,10 +68,10 @@ cd your-repo-name
 <summary><b>v1.0.2</b> (2026-08-27)</summary>
 
 ### 追加 (Added)
-- 進捗表示処理追加
-- ビームサーチ追加
-- ビームサーチをcudaで強化
-- CLI引数対応
+- 進捗表示処理を追加
+- ビームサーチを追加
+- CUDA 向け強化を実施
+- CLI 引数に対応
 
 </details>
 
@@ -59,13 +79,13 @@ cd your-repo-name
 <summary><b>v1.0.1</b> (2026-08-23)</summary>
 
 ### 追加 (Added)
-- 設定ファイルConfig.pyを追加
+- 設定ファイル `Config.py` を追加
 
 ### 変更 (Changed)
 - 再帰関数を使うよう変更
 
 ### 修正 (Fixed)
-- プロジェクト名をPyHLSearchに修正
+- プロジェクト名を修正
 
 </details>
 
