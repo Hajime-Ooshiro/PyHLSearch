@@ -1,4 +1,4 @@
-"""HLSearch_bitpack.py
+"""HLSearch_BitPack.py
 
 NumPy を使わず、Python の int を bitset として扱う bit-packed 実装。
 
@@ -8,7 +8,7 @@ NumPy を使わず、Python の int を bitset として扱う bit-packed 実装
 - 依存: Python stdlib + tqdm
 
 例:
-    python HLSearch_bitpack.py --depth 8 --limit 400 --max-depth 249 --target 447
+    python HLSearch_BitPack.py --depth 8 --limit 400 --max-depth 249 --target 447
 """
 
 from __future__ import annotations
@@ -51,6 +51,24 @@ class SearchConfig:
     postfix_update_interval: int = 10000
     shift_path_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shift_path.txt")
 
+    def __post_init__(self) -> None:
+        """設定値の整合性を早期に検証する(実行時ではなく構築時に失敗させる)。"""
+        if self.cols <= 0:
+            raise ValueError(f"cols は正の整数である必要があります: cols={self.cols}")
+        if self.depth < 0:
+            raise ValueError(f"depth は0以上である必要があります: depth={self.depth}")
+        if self.depth > len(self.primes):
+            raise ValueError(
+                f"depth={self.depth} が primes の要素数({len(self.primes)})を超えています"
+            )
+        if self.limit < 0:
+            raise ValueError(f"limit は0以上である必要があります: limit={self.limit}")
+        if self.postfix_update_interval <= 0:
+            raise ValueError(
+                f"postfix_update_interval は正の整数である必要があります: "
+                f"postfix_update_interval={self.postfix_update_interval}"
+            )
+
 
 DEFAULT_CONFIG = SearchConfig()
 shift_path_file: str = DEFAULT_CONFIG.shift_path_file
@@ -58,7 +76,7 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(base_dir: str | os.PathLike[str], console_level: str = "INFO") -> str:
-    log_path = os.path.join(base_dir, "HLSearch_bitpack.log")
+    log_path = os.path.join(base_dir, "HLSearch_BitPack.log")
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
@@ -78,14 +96,14 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str = "INFO")
     return log_path
 
 
-COLS: int = 3159
-LIMIT: int = 447
-DEPTH: int = 8
-MAX_DEPTH: int = 249
-TARGET: int = 447
-PROGRESS_MININTERVAL: float = 1.0
-POSTFIX_UPDATE_INTERVAL: int = 10000
-PRIMES: list[int] = generate_primes(1579)
+COLS: int = DEFAULT_CONFIG.cols
+LIMIT: int = DEFAULT_CONFIG.limit
+DEPTH: int = DEFAULT_CONFIG.depth
+MAX_DEPTH: int = DEFAULT_CONFIG.max_depth
+TARGET: int = DEFAULT_CONFIG.target
+PROGRESS_MININTERVAL: float = DEFAULT_CONFIG.progress_mininterval
+POSTFIX_UPDATE_INTERVAL: int = DEFAULT_CONFIG.postfix_update_interval
+PRIMES: list[int] = DEFAULT_CONFIG.primes
 
 
 def build_base_rows(primes: Sequence[int]) -> list[int]:
@@ -177,8 +195,8 @@ class State:
         self.pbar = tqdm(desc="search", unit="node", unit_scale=True, dynamic_ncols=True, mininterval=self.config.progress_mininterval)
 
     def report_progress(self, force: bool = False) -> None:
-        self.pbar.update(1)
         if self.node_count % self.config.postfix_update_interval == 0:
+            self.pbar.update(1)
             self.pbar.set_postfix(best=self.max_count, hits=self.results, depth=len(self.key), key=list(self.key), refresh=force)
 
     def search(self, depth: int) -> None:

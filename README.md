@@ -82,7 +82,26 @@ python HLSearch_bitpack.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
 pytest -q
 ```
 
+## 開発者向け情報
+詳細なアーキテクチャ、コード規約、デバッグ方法は [`.github/copilot-instructions.md`](.github/copilot-instructions.md) を参照してください。
+
 ## 変更履歴
+<details>
+<summary><b>v1.0.7</b> (2026-08-31)</summary>
+
+### 変更 (Changed)
+- テストファイルの整理：`test_checkpoint.py`、`test_review.py` をルートディレクトリから `tests/` に移動
+- プログレスバー更新を統一：全実装で `report_progress()` が `postfix_update_interval` の条件に従うよう修正（HLSearch_Numba.py、HLSearch_Beam.py）
+
+### 修正 (Fixed)
+- テスト属性名の不一致を修正：`test_integration.py` で使用していた `_stack_state` を正しい `_stack` に修正
+- SearchConfig の検証が不足していた問題を修正：HLSearch_Numba.py、HLSearch_BitPack.py、HLSearch_Beam.py に `__post_init__()` 検証メソッドを追加し、すべての実装で一貫した設定チェックを実現
+
+### 追加 (Added)
+- `.github/copilot-instructions.md` を追加：Copilot セッション向けのコードベース・ガイド
+
+</details>
+
 <details>
 <summary><b>v1.0.6</b> (2026-08-30)</summary>
 

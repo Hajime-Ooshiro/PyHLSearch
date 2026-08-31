@@ -373,8 +373,8 @@ class State:
         ときは set_postfix に refresh=True を渡し、間引かずに必ず再描画する
         (探索開始・終了時など)。
         """
-        self.pbar.update(1)
         if self.node_count % self.config.postfix_update_interval == 0:
+            self.pbar.update(1)
             self.pbar.set_postfix(
                 best=self.max_count,
                 hits=self.results,

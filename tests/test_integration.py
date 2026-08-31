@@ -153,9 +153,9 @@ def test_state_checkpoint_roundtrip(tmp_path):
     state.results = 2
     state.shifts = [[0, 1], [1, 0]]
     state.node_count = 42
-    state._stack_state = [
-        (0, state.zero_mask.copy(), 1, 2),
-        (1, np.array([True, True, False, False, True, True, False, False], dtype=bool), 0, 3),
+    state._stack = [
+        [0, state.zero_mask.copy(), 1, 2],
+        [1, np.array([True, True, False, False, True, True, False, False], dtype=bool), 0, 3],
     ]
 
     state._save_checkpoint()
@@ -166,8 +166,8 @@ def test_state_checkpoint_roundtrip(tmp_path):
     assert restored.max_count == 7
     assert restored.results == 2
     assert restored.node_count == 42
-    assert restored._stack_state[0][0] == 0
-    assert restored._stack_state[0][2] == 1
+    assert restored._stack[0][0] == 0
+    assert restored._stack[0][2] == 1
     assert restored.shifts == [[0, 1], [1, 0]]
 
 
