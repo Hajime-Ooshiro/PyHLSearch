@@ -69,6 +69,24 @@ class SearchConfig:
     postfix_update_interval: int = 10000
     shift_path_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shift_path.txt")
 
+    def __post_init__(self) -> None:
+        """設定値の整合性を早期に検証する(実行時ではなく構築時に失敗させる)。"""
+        if self.cols <= 0:
+            raise ValueError(f"cols は正の整数である必要があります: cols={self.cols}")
+        if self.depth < 0:
+            raise ValueError(f"depth は0以上である必要があります: depth={self.depth}")
+        if self.depth > len(self.primes):
+            raise ValueError(
+                f"depth={self.depth} が primes の要素数({len(self.primes)})を超えています"
+            )
+        if self.limit < 0:
+            raise ValueError(f"limit は0以上である必要があります: limit={self.limit}")
+        if self.postfix_update_interval <= 0:
+            raise ValueError(
+                f"postfix_update_interval は正の整数である必要があります: "
+                f"postfix_update_interval={self.postfix_update_interval}"
+            )
+
 
 DEFAULT_CONFIG = SearchConfig()
 shift_path_file: str = DEFAULT_CONFIG.shift_path_file
@@ -482,8 +500,8 @@ class State:
         self.pbar = tqdm(desc="search", unit="node", unit_scale=True, dynamic_ncols=True, mininterval=self.config.progress_mininterval)
 
     def report_progress(self, force: bool = False) -> None:
-        self.pbar.update(1)
         if self.node_count % self.config.postfix_update_interval == 0:
+            self.pbar.update(1)
             self.pbar.set_postfix(best=self.max_count, hits=self.results, depth=len(self.key), key=list(self.key), refresh=force)
 
     def search(self, depth: int) -> None:

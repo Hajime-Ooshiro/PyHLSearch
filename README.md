@@ -15,6 +15,18 @@
 - `HLSearch_bitpack.py`: NumPy を使わず `int` のビット演算で処理する軽量版。
 - `HLSearch_Beam.py`: Beam 検索 + GPU/CPU 並列化の実験版。
 
+## 中断・再開
+`HLSearch.py` では探索の途中経過を JSON 形式の checkpoint として保存でき、再開可能です。
+
+```powershell
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --checkpoint resume.json
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --resume resume.json
+```
+
+- `--checkpoint`: 途中経過を `resume.json` のような JSON ファイルへ保存
+- `--resume`: その checkpoint から探索を再開
+- 旧バージョン(`key=value`形式のテキスト)の checkpoint ファイルはそのままでは読み込めません。新しい設定で探索をやり直してください。
+
 ## 動作環境
 - Python 3.10 以上
 - NumPy（`HLSearch.py` で必要）
@@ -50,12 +62,17 @@ python HLSearch_bitpack.py --depth 8 --limit 400 --max-depth 249 --target 447
 - `-p, --primes-count`: 先頭 N 個の素数だけ使用
 - `--cols`: 列数
 - `--output`: 結果の出力先ファイル
+- `--mininterval`: tqdm 進捗表示の最短更新間隔(秒)
+- `--log-level`: コンソールに出すログレベル(`DEBUG`/`INFO`/`WARNING`/`ERROR`。ログファイルは常に`DEBUG`)
+- `--checkpoint`: 途中経過を JSON 形式で保存する checkpoint ファイル
+- `--resume`: checkpoint から再開
 - `--numba`: `HLSearch_Numba.py` で JIT 有効化
 - `--cuda`: `HLSearch_Numba.py` で CUDA を優先使用
 
 ## 例: 小規模テスト
 ```powershell
 python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt --checkpoint resume.json
 python HLSearch_Numba.py --numba --depth 3 --cols 50 --limit 0 --output shift_path.txt
 python HLSearch_bitpack.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
 ```
@@ -65,7 +82,40 @@ python HLSearch_bitpack.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
 pytest -q
 ```
 
+## 開発者向け情報
+詳細なアーキテクチャ、コード規約、デバッグ方法は [`.github/copilot-instructions.md`](.github/copilot-instructions.md) を参照してください。
+
 ## 変更履歴
+<details>
+<summary><b>v1.0.7</b> (2026-08-31)</summary>
+
+### 変更 (Changed)
+- テストファイルの整理：`test_checkpoint.py`、`test_review.py` をルートディレクトリから `tests/` に移動
+- プログレスバー更新を統一：全実装で `report_progress()` が `postfix_update_interval` の条件に従うよう修正（HLSearch_Numba.py、HLSearch_Beam.py）
+
+### 修正 (Fixed)
+- テスト属性名の不一致を修正：`test_integration.py` で使用していた `_stack_state` を正しい `_stack` に修正
+- SearchConfig の検証が不足していた問題を修正：HLSearch_Numba.py、HLSearch_BitPack.py、HLSearch_Beam.py に `__post_init__()` 検証メソッドを追加し、すべての実装で一貫した設定チェックを実現
+
+### 追加 (Added)
+- `.github/copilot-instructions.md` を追加：Copilot セッション向けのコードベース・ガイド
+
+</details>
+
+<details>
+<summary><b>v1.0.6</b> (2026-08-30)</summary>
+
+### 変更 (Changed)
+- `HLSearch.py` の checkpoint 保存形式を独自テキスト(`key=value`)から JSON に変更(`--checkpoint`/`--resume` で扱うファイルの拡張子は `.json` を推奨)
+- checkpoint の保存/再開処理を、探索本体のスタックと完全に一致した状態でのみ行うよう修正し、途中中断からの再開結果が通し実行と厳密に一致するようにした
+- `--log-level` オプションが実際にログ出力レベルへ反映されるよう修正
+
+### 修正 (Fixed)
+- checkpoint に保存する内部状態(ビットマスク)が大きな探索幅(`cols`)で符号オーバーフローし、再開時に壊れることがあった不具合を修正
+- `--log-level` を指定してもコンソールのログレベルが変わらなかった不具合を修正
+
+</details>
+
 <details>
 <summary><b>v1.0.5</b> (2026-08-30)</summary>
 

@@ -20,7 +20,7 @@ def run_state(primes, depth, limit, target, max_depth, cols, output_path):
         cols=cols,
         shift_path_file=str(output_path),
     )
-    shift_table = build_shift_table(primes[:depth])
+    shift_table = build_shift_table(primes[:depth], cols)
     state = State(config, shift_table)
     state.run(depth)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,5 +139,35 @@ def test_popcount64_matches_python_reference():
     got = popcount64_numpy(values)
     expected = np.array([0, 1, 8, 64], dtype=np.int64)
     assert np.array_equal(got, expected)
+
+
+def test_state_checkpoint_roundtrip(tmp_path):
+    """探索途中状態をテキスト checkpoint に保存し、再読込できることを確認"""
+    path = tmp_path / "resume_state.txt"
+    config = SearchConfig(primes=[2, 3], depth=2, limit=0, target=10, max_depth=2, cols=8)
+    shift_table = build_shift_table([2, 3], 8)
+    state = State(config, shift_table, checkpoint_path=path, checkpoint_interval=1)
+    state.key = [0, 1]
+    state.zero_mask = np.array([True, False, True, False, True, False, True, False], dtype=bool)
+    state.max_count = 7
+    state.results = 2
+    state.shifts = [[0, 1], [1, 0]]
+    state.node_count = 42
+    state._stack = [
+        [0, state.zero_mask.copy(), 1, 2],
+        [1, np.array([True, True, False, False, True, True, False, False], dtype=bool), 0, 3],
+    ]
+
+    state._save_checkpoint()
+    restored = State(config, shift_table)
+    restored._load_checkpoint(path)
+
+    assert restored.key == [0, 1]
+    assert restored.max_count == 7
+    assert restored.results == 2
+    assert restored.node_count == 42
+    assert restored._stack[0][0] == 0
+    assert restored._stack[0][2] == 1
+    assert restored.shifts == [[0, 1], [1, 0]]
 
 
