@@ -1,80 +1,64 @@
 # HLSearch
 
-ハーディ・リトルウッドの第2予想に関する探索プログラム。
+ハーディ・リトルウッドの第2予想に関する探索プログラムです。
 
 ## 概要
-- 2 から 1579 の素数を使い、各階層でのシフト候補を探索する。
-- `State` クラスで反復DFSを実装し、再帰の制限やコールスタックを避ける。
-- 事前計算したシフトテーブルで高速化し、探索条件に基づいて枝刈りを行う。
+- 2 から 1579 までの素数を対象に、各階層でのシフト候補を探索する。
+- `State` クラスで反復 DFS を実装し、再帰制限やコールスタックの問題を避ける。
+- 事前計算したシフトテーブルを使って探索を高速化し、必要に応じて枝刈りを行う。
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
-- 実装には `HLSearch.py`（NumPy版）、`HLSearch_Numba.py`（Numba版）、`HLSearch_bitpack.py`（純Python bit-packed版）がある。
+- 現在のリポジトリの標準実装は `HLSearch.py` であり、他の変種は過去の実験コードとして `bk/` に保管されている。
 
-## 実装一覧
-- `HLSearch.py`: 既定の NumPy ベース実装。標準運用向け。
-- `HLSearch_Numba.py`: Numba JIT / CUDA 対応版。高速度化を狙う。
-- `HLSearch_bitpack.py`: NumPy を使わず `int` のビット演算で処理する軽量版。
-- `HLSearch_Beam.py`: Beam 検索 + GPU/CPU 並列化の実験版。
+## リポジトリ構成
+- `HLSearch.py`: 現在の標準実装。NumPy ベースの探索エンジン。
+- `tests/`: 統合テスト、チェックポイント再開テストなど。
+- `bk/`: 過去の実験実装や比較用コード。
+- `.github/copilot-instructions.md`: Copilot 向けの開発ガイド。
 
-## 中断・再開
-`HLSearch.py` では探索の途中経過を JSON 形式の checkpoint として保存でき、再開可能です。
+## 動作環境
+- Python 3.10 以上
+- NumPy
+- tqdm
 
+## インストール
+```powershell
+python -m pip install numpy tqdm
+```
+
+## 基本的な実行方法
+```powershell
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
+```
+
+### 小規模テスト
+```powershell
+python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+```
+
+### 中断・再開
 ```powershell
 python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --checkpoint resume.json
 python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --resume resume.json
 ```
 
-- `--checkpoint`: 途中経過を `resume.json` のような JSON ファイルへ保存
-- `--resume`: その checkpoint から探索を再開
-- 旧バージョン(`key=value`形式のテキスト)の checkpoint ファイルはそのままでは読み込めません。新しい設定で探索をやり直してください。
+- `--checkpoint`: 途中経過を JSON 形式で保存する
+- `--resume`: 保存済み checkpoint から探索を再開する
+- 旧形式の `key=value` checkpoint は読み込まないため、JSON 形式で保存したファイルを使うこと
 
-## 動作環境
-- Python 3.10 以上
-- NumPy（`HLSearch.py` で必要）
-- tqdm
-- Numba（`HLSearch_Numba.py` を使う場合）
-
-## インストール
-```powershell
-python -m pip install numpy tqdm numba
-```
-
-## 実行方法
-### 基本実行（NumPy版）
-```powershell
-python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
-```
-
-### Numba版
-```powershell
-python HLSearch_Numba.py --numba --depth 8 --limit 400 --max-depth 249 --target 447
-```
-
-### Bit-packed版
-```powershell
-python HLSearch_bitpack.py --depth 8 --limit 400 --max-depth 249 --target 447
-```
-
-よく使うオプション:
+## 代表的なオプション
 - `-d, --depth`: 探索する深さ
 - `-l, --limit`: 枝刈りの下限
 - `--max-depth`: 最大深さ
-- `-t, --target`: 最大深さ時の目標値
-- `-p, --primes-count`: 先頭 N 個の素数だけ使用
+- `-t, --target`: 最大深さでの目標値
 - `--cols`: 列数
-- `--output`: 結果の出力先ファイル
-- `--mininterval`: tqdm 進捗表示の最短更新間隔(秒)
-- `--log-level`: コンソールに出すログレベル(`DEBUG`/`INFO`/`WARNING`/`ERROR`。ログファイルは常に`DEBUG`)
-- `--checkpoint`: 途中経過を JSON 形式で保存する checkpoint ファイル
+- `--output`: 結果出力先ファイル
+- `--log-level`: コンソールのログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR`)
+- `--checkpoint`: 中断時の JSON checkpoint 保存先
 - `--resume`: checkpoint から再開
-- `--numba`: `HLSearch_Numba.py` で JIT 有効化
-- `--cuda`: `HLSearch_Numba.py` で CUDA を優先使用
 
-## 例: 小規模テスト
+## 例: 既定設定の確認
 ```powershell
-python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
-python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt --checkpoint resume.json
-python HLSearch_Numba.py --numba --depth 3 --cols 50 --limit 0 --output shift_path.txt
-python HLSearch_bitpack.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch.py --depth 4 --cols 500 --limit 0 --output shift_path.txt
 ```
 
 ## テスト
@@ -83,22 +67,22 @@ pytest -q
 ```
 
 ## 開発者向け情報
-詳細なアーキテクチャ、コード規約、デバッグ方法は [`.github/copilot-instructions.md`](.github/copilot-instructions.md) を参照してください。
+詳細な実装方針、デバッグ方法、チェックポイント設計については `.github/copilot-instructions.md` を参照してください。
 
 ## 変更履歴
 <details>
 <summary><b>v1.0.7</b> (2026-08-31)</summary>
 
 ### 変更 (Changed)
-- テストファイルの整理：`test_checkpoint.py`、`test_review.py` をルートディレクトリから `tests/` に移動
-- プログレスバー更新を統一：全実装で `report_progress()` が `postfix_update_interval` の条件に従うよう修正（HLSearch_Numba.py、HLSearch_Beam.py）
+- `tests/` 配下にテストを整理し、関連テストが配置場所に依存しないよう統一
+- `report_progress()` の更新頻度を `postfix_update_interval` に揃えて、進捗表示が一貫するよう修正
 
 ### 修正 (Fixed)
-- テスト属性名の不一致を修正：`test_integration.py` で使用していた `_stack_state` を正しい `_stack` に修正
-- SearchConfig の検証が不足していた問題を修正：HLSearch_Numba.py、HLSearch_BitPack.py、HLSearch_Beam.py に `__post_init__()` 検証メソッドを追加し、すべての実装で一貫した設定チェックを実現
+- テスト属性名 `_stack_state` の誤りを `_stack` に修正
+- 各実装で不足していた `SearchConfig.__post_init__` を整備し、設定の検証が一貫するよう修正
 
 ### 追加 (Added)
-- `.github/copilot-instructions.md` を追加：Copilot セッション向けのコードベース・ガイド
+- `.github/copilot-instructions.md` を追加
 
 </details>
 
@@ -106,13 +90,13 @@ pytest -q
 <summary><b>v1.0.6</b> (2026-08-30)</summary>
 
 ### 変更 (Changed)
-- `HLSearch.py` の checkpoint 保存形式を独自テキスト(`key=value`)から JSON に変更(`--checkpoint`/`--resume` で扱うファイルの拡張子は `.json` を推奨)
-- checkpoint の保存/再開処理を、探索本体のスタックと完全に一致した状態でのみ行うよう修正し、途中中断からの再開結果が通し実行と厳密に一致するようにした
-- `--log-level` オプションが実際にログ出力レベルへ反映されるよう修正
+- checkpoint を JSON 形式へ変更し、再開の信頼性を向上
+- 進行中のスタック状態と checkpoint の保存状態を一致させるように修正
+- `--log-level` が正しく反映されるように修正
 
 ### 修正 (Fixed)
-- checkpoint に保存する内部状態(ビットマスク)が大きな探索幅(`cols`)で符号オーバーフローし、再開時に壊れることがあった不具合を修正
-- `--log-level` を指定してもコンソールのログレベルが変わらなかった不具合を修正
+- 大きな `cols` で checkpoint のビットマスクが overflow して再開時に壊れる問題を修正
+- `--log-level` 指定時にコンソールログが変わらない不具合を修正
 
 </details>
 
@@ -120,13 +104,12 @@ pytest -q
 <summary><b>v1.0.5</b> (2026-08-30)</summary>
 
 ### 追加 (Added)
-- `HLSearch_Numba.py` を追加（Numba/JIT ベース高速化）
-- `HLSearch_bitpack.py` を追加（NumPy 非依存 bit-packed 実装）
-- `HLSearch_Beam.py` で GPU/CPU ビーム探索を整理
+- 主要探索ロジックを `HLSearch.py` に整理
+- 旧来の実験実装を `bk/` に移管
 
 ### 変更 (Changed)
-- README に複数実装の利用方法を追記
-- 実行手順と依存関係を更新
+- README と実行手順を現行構成に合わせて更新
+- 依存関係と利用例を整理
 
 </details>
 
@@ -134,10 +117,9 @@ pytest -q
 <summary><b>v1.0.4</b> (2026-08-30)</summary>
 
 ### 変更 (Changed)
-- `PRIMES` をハードコードから `generate_primes()` に変更
+- `PRIMES` を `generate_primes()` ベースへ整理
 - `SearchConfig` に設定を集約
-- `Config.py` を削除し、本体とテストを整理
-- `FastSearcher` / `build_bit_tables` を役割の明確な `State` ベースへ整理
+- 実験コードを `bk/` に整理
 
 </details>
 
@@ -145,9 +127,8 @@ pytest -q
 <summary><b>v1.0.3</b> (2026-08-27)</summary>
 
 ### 追加 (Added)
-- 探索状態クラス `State` を使用
-- 事前計算を導入
-- `Config.py` を削除
+- `State` クラスによる探索状態管理を導入
+- 事前計算テーブルを活用する設計に整理
 
 </details>
 
@@ -155,24 +136,16 @@ pytest -q
 <summary><b>v1.0.2</b> (2026-08-27)</summary>
 
 ### 追加 (Added)
-- 進捗表示処理を追加
-- ビームサーチを追加
-- CUDA 向け強化を実施
-- CLI 引数に対応
+- 進捗表示を追加
+- CLI 引数による実行を追加
 
 </details>
 
 <details>
 <summary><b>v1.0.1</b> (2026-08-23)</summary>
 
-### 追加 (Added)
-- 設定ファイル `Config.py` を追加
-
 ### 変更 (Changed)
-- 再帰関数を使うよう変更
-
-### 修正 (Fixed)
-- プロジェクト名を修正
+- 再帰探索から反復型探索へ整理
 
 </details>
 
