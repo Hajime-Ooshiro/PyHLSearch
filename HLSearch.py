@@ -66,7 +66,7 @@ class SearchConfig:
         postfix_update_interval: postfix 更新の頻度。
         shift_path_file: 出力ファイルパス.
     """
-    primes: Sequence[int] = field(default_factory=lambda: generate_primes(1579))
+    primes: list[int] = field(default_factory=lambda: generate_primes(1579))
     depth: int = 8
     limit: int = 447
     max_depth: int = 249
@@ -94,8 +94,8 @@ class SearchConfig:
                 f"postfix_update_interval={self.postfix_update_interval}"
             )
 
-DEFAULT_CONFIG = SearchConfig()
-shift_path_file: str = DEFAULT_CONFIG.shift_path_file
+cfg = SearchConfig()
+shift_path_file: str = cfg.shift_path_file
 
 # --- logging設定 ---
 logger = logging.getLogger(__name__)
@@ -130,14 +130,14 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -
     return log_path
 
 
-COLS: int = DEFAULT_CONFIG.cols
-LIMIT: int = DEFAULT_CONFIG.limit
+# COLS: int = cfg.cols
+# LIMIT: int = cfg.limit
 
-DEPTH: int = DEFAULT_CONFIG.depth
-MAX_DEPTH: int = DEFAULT_CONFIG.max_depth
-TARGET: int = DEFAULT_CONFIG.target
-PROGRESS_MININTERVAL: float = DEFAULT_CONFIG.progress_mininterval  # tqdm進捗表示の最短更新間隔(秒)
-POSTFIX_UPDATE_INTERVAL: int = DEFAULT_CONFIG.postfix_update_interval
+# DEPTH: int = cfg.depth
+# MAX_DEPTH: int = cfg.max_depth
+# TARGET: int = cfg.target
+# PROGRESS_MININTERVAL: float = cfg.progress_mininterval  # tqdm進捗表示の最短更新間隔(秒)
+# POSTFIX_UPDATE_INTERVAL: int = cfg.postfix_update_interval
 
 # 2,3,5,7,11,13,...,1579 の素数リスト
 PRIMES: list[int] = generate_primes(1579)
@@ -157,7 +157,7 @@ def shift_array(arr: NDArray[np.bool_], k: int) -> NDArray[np.bool_]:
     return result
  
 
-def build_base_rows(primes: Sequence[int], cols: int = COLS) -> NDArray[np.bool_]:
+def build_base_rows(primes: Sequence[int], cols: int = cfg.cols) -> NDArray[np.bool_]:
     """指定した素数リストから各階層の基底行を生成する。
 
     各要素は `bool((idx % p) == 1)` を保持し、探索では「0かどうか」だけを
@@ -175,7 +175,7 @@ def build_base_rows(primes: Sequence[int], cols: int = COLS) -> NDArray[np.bool_
     return np.array([(idx % p == 1) for p in primes])
 
 
-def build_shift_table(primes: Sequence[int], cols: int = COLS) -> list[NDArray[np.bool_]]:
+def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArray[np.bool_]]:
     """各レベルごとのシフト候補テーブルを事前生成する。
 
     これにより探索時に毎回 `shift_array()` と `~` 演算を行わず、
@@ -239,13 +239,23 @@ class State:
             config = SearchConfig(
                 primes=config,
                 depth=len(config),
-                limit=DEFAULT_CONFIG.limit if limit is None else limit,
-                max_depth=DEFAULT_CONFIG.max_depth if max_depth is None else max_depth,
-                target=DEFAULT_CONFIG.target if target is None else target,
-                cols=COLS,
+                limit=cfg.limit if limit is None else limit,
+                max_depth=cfg.max_depth if max_depth is None else max_depth,
+                target=cfg.target if target is None else target,
+                cols=cfg.cols,
             )
         self.config = config
         primes = config.primes
+        if len(shift_table) < config.depth:
+            raise ValueError(
+                f"shift_table の階層数({len(shift_table)})が depth({config.depth})未満です"
+            )
+        for level, (prime, table) in enumerate(zip(primes[:config.depth], shift_table)):
+            if table.ndim != 2 or table.shape != (prime, config.cols):
+                raise ValueError(
+                    f"shift_table[{level}] の形状が不正です: "
+                    f"期待値=({prime}, {config.cols}), 実際={table.shape}"
+                )
         self.limit = config.limit if limit is None else limit
         self.max_depth = config.max_depth if max_depth is None else max_depth
         self.target = config.target if target is None else target
@@ -308,7 +318,15 @@ class State:
             })
 
         saved = {
-            "version": 1,
+            "version": 2,
+            "settings": {
+                "primes": list(self.primes),
+                "depth": self.config.depth,
+                "cols": self.config.cols,
+                "limit": self.limit,
+                "max_depth": self.max_depth,
+                "target": self.target,
+            },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
             "max_count": self.max_count,
@@ -344,8 +362,21 @@ class State:
                 "新しい設定で最初から探索をやり直してください。"
             ) from exc
 
-        if saved.get("version") != 1:
+        if saved.get("version") != 2:
             raise ValueError(f"unsupported checkpoint version: {saved.get('version')}")
+        expected_settings = {
+            "primes": list(self.primes),
+            "depth": self.config.depth,
+            "cols": self.config.cols,
+            "limit": self.limit,
+            "max_depth": self.max_depth,
+            "target": self.target,
+        }
+        if saved.get("settings") != expected_settings:
+            raise ValueError(
+                f"{path} の探索設定が現在の設定と一致しません: "
+                f"保存値={saved.get('settings')!r}, 現在値={expected_settings!r}"
+            )
 
         self.key = list(saved.get("key", []))
         self.zero_mask = self._int_to_mask(int(saved.get("zero_mask", 0)), self.config.cols)
@@ -374,7 +405,7 @@ class State:
         (探索開始・終了時など)。
         """
         if self.node_count % self.config.postfix_update_interval == 0:
-            self.pbar.update(1)
+            self.pbar.update(self.config.postfix_update_interval)
             self.pbar.set_postfix(
                 best=self.max_count,
                 hits=self.results,
@@ -473,18 +504,18 @@ class State:
                     continue
 
                 if level + 1 >= depth:
+                    if count == self.target:
+                        message = f"target depth={depth} key={list(key)} count={count}"
+                        self.pbar.write(message)
+                        logger.info(message)  # ログファイルにも残す(pbar.writeだけだと画面にしか出ない)
+                        self.results += 1
+                        self.shifts.append(list(key))
+
                     if not (depth == self.max_depth and count > self.target):
                         if count > self.max_count:
                             self.max_count = count
-                            self.results = 1
-                            self.shifts.clear()
-                            self.shifts.append(list(key))
-                            message = f"done key={list(key)} count={count}"
-                            self.pbar.write(message)
-                            logger.info(message)  # ログファイルにも残す(pbar.writeだけだと画面にしか出ない)
                         elif count == self.max_count:
-                            self.results += 1
-                            self.shifts.append(list(key))
+                            pass
 
                     key.pop()
                     continue
@@ -497,6 +528,8 @@ class State:
 
     def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
         """primes[:depth] を使って深さ depth までの探索を実行するエントリポイント"""
+        if depth is not None and depth < 0:
+            raise ValueError(f"depth は0以上である必要があります: depth={depth}")
         depth_to_use = self.config.depth if depth is None else depth
         if depth_to_use > len(self.primes):
             raise ValueError(f"depth={depth_to_use} が使用可能な素数の個数({len(self.primes)})を超えています")
@@ -526,21 +559,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="HLSearch: 素数シフト探索プログラム",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-d", "--depth", type=int, default=DEPTH,
+    parser.add_argument("-d", "--depth", type=int, default=cfg.depth,
                         help="探索する階層数(使用する素数の個数)。primesの長さ以下である必要がある。")
-    parser.add_argument("-l", "--limit", type=int, default=LIMIT,
+    parser.add_argument("-l", "--limit", type=int, default=cfg.limit,
                         help="打ち切りに使うcountの下限値。これ未満の枝は探索しない。")
-    parser.add_argument("--max-depth", type=int, default=MAX_DEPTH,
+    parser.add_argument("--max-depth", type=int, default=cfg.max_depth,
                         help="depthがこの値と一致するとき、--targetによる追加打ち切りを有効にする。")
-    parser.add_argument("-t", "--target", type=int, default=TARGET,
+    parser.add_argument("-t", "--target", type=int, default=cfg.target,
                         help="depth == max-depth のとき、countがこの値を超えたら結果を採用せず打ち切る。")
     parser.add_argument("-p", "--primes-count", type=int, default=None, metavar="N",
                         help="PRIMESの先頭N個だけを使う(未指定なら全て使用)。")
-    parser.add_argument("--cols", type=int, default=COLS,
+    parser.add_argument("--cols", type=int, default=cfg.cols,
                         help="列数(=探索対象の長さ)。")
     parser.add_argument("--output", type=str, default=shift_path_file,
                         help="最適シフトパスの出力先ファイル。")
-    parser.add_argument("--mininterval", type=float, default=PROGRESS_MININTERVAL,
+    parser.add_argument("--mininterval", type=float, default=cfg.progress_mininterval,
                         help="tqdm進捗表示の最短更新間隔(秒)。")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO",
                         help="コンソールに出すログレベル(ログファイルは常にDEBUG)。")
@@ -578,7 +611,7 @@ if __name__ == "__main__":
         target=target,
         cols=cols,
         progress_mininterval=args.mininterval,
-        postfix_update_interval=POSTFIX_UPDATE_INTERVAL,
+        postfix_update_interval=cfg.postfix_update_interval,
         shift_path_file=output_path,
     )
 

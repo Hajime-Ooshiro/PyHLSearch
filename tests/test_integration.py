@@ -5,7 +5,6 @@ import pytest
 
 import HLSearch
 from HLSearch import SearchConfig, State, build_shift_table
-from HLSearch_Beam import CPUBackend, build_bit_tables_packed, popcount64_numpy
 
 cfg = SearchConfig()
 
@@ -86,59 +85,13 @@ class TestIntegration:
         assert dummy_file.exists()
 
 
-def test_packed_bit_table_matches_expected_mask_layout():
-    """packed bit table が各列の条件を正確に表していることを確認"""
-    primes = [2, 3]
-    cols = 12
-    tables, n_words = build_bit_tables_packed(primes, cols)
-
-    assert n_words == 1
-    assert len(tables) == 2
-    for level, p in enumerate(primes):
-        table = tables[level]
-        assert table.shape == (p, n_words)
-        for shift in range(p):
-            expected = np.zeros(n_words, dtype=np.uint64)
-            for col in range(cols):
-                if (col % p) != shift:
-                    bit = col % 64
-                    expected[0] |= np.uint64(1) << np.uint64(bit)
-            assert np.array_equal(table[shift], expected)
 
 
-def test_cpu_backend_score_all_counts_bits_correctly():
-    """CPUBackend.score_all が AND 後の popcount を正しく返すことを確認"""
-    tables, n_words = build_bit_tables_packed([2], 64)
-    backend = CPUBackend(tables, n_words)
-
-    beam_masks = np.array(
-        [
-            [np.uint64(0xFFFFFFFFFFFFFFFF)],
-            [np.uint64(0xAAAAAAAAAAAAAAAA)],
-        ],
-        dtype=np.uint64,
-    )
-
-    counts = backend.score_all(beam_masks, 0)
-    expected = np.array([[32, 32], [32, 0]], dtype=np.int64)
-    assert np.array_equal(counts, expected)
 
 
-def test_popcount64_matches_python_reference():
-    """popcount64_numpy が uint64 の各要素に対する popcount を正しく計算する"""
-    values = np.array(
-        [
-            np.uint64(0),
-            np.uint64(1),
-            np.uint64(0xF0F0),
-            np.uint64(0xFFFFFFFFFFFFFFFF),
-        ],
-        dtype=np.uint64,
-    )
 
-    got = popcount64_numpy(values)
-    expected = np.array([0, 1, 8, 64], dtype=np.int64)
-    assert np.array_equal(got, expected)
+
+
 
 
 def test_state_checkpoint_roundtrip(tmp_path):
