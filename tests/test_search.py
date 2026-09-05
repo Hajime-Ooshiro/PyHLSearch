@@ -1,23 +1,16 @@
-import numpy as np
-
 from HLSearch import SearchConfig, State, build_shift_table
 
 
-def test_search_uses_nums_values_as_shift_candidates():
+def test_search_uses_prime_ranges_as_shift_candidates():
     primes = [2, 3]
-    nums = [[1], [2]]
     cols = 8
     shift_table = build_shift_table(primes, cols)
 
-    expected_count = int(
-        np.count_nonzero(shift_table[0][nums[0][0]] & shift_table[1][nums[1][0]])
-    )
     config = SearchConfig(
         primes=primes,
-        nums=nums,
         depth=2,
         limit=0,
-        target=expected_count,
+        target=cols + 1,
         max_depth=2,
         cols=cols,
     )
@@ -25,5 +18,26 @@ def test_search_uses_nums_values_as_shift_candidates():
     state = State(config, shift_table)
     state.run()
 
-    assert state.node_count == 2
-    assert state.shifts == [[1, 2]]
+    assert state.node_count == 8
+    assert all(0 <= shift < primes[level] for path in state.shifts for level, shift in enumerate(path))
+
+
+def test_search_with_zero_depth_finishes_without_exploring():
+    config = SearchConfig(
+        primes=[],
+        depth=0,
+        limit=0,
+        target=0,
+        max_depth=0,
+        cols=8,
+    )
+    state = State(config, [])
+
+    result = state.run()
+
+    assert result is state
+    assert state.node_count == 0
+    assert state.key == []
+    assert state.max_count == 0
+    assert state.results == 0
+    assert state.shifts == []
