@@ -4,6 +4,7 @@
 
 ## 概要
 - 2 から 1579 までの素数を対象に、各階層でのシフト候補を探索する。
+- `search()` は `SearchConfig.nums` に定義された各階層の候補値を使用して探索する。
 - `State` クラスで反復 DFS を実装し、再帰制限やコールスタックの問題を避ける。
 - 事前計算したシフトテーブルを使って探索を高速化し、必要に応じて枝刈りを行う。
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
@@ -55,6 +56,22 @@ python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --resume r
 - `--log-level`: コンソールのログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR`)
 - `--checkpoint`: 中断時の JSON checkpoint 保存先
 - `--resume`: checkpoint から再開
+
+## 探索候補の指定
+
+`SearchConfig.nums` は、階層ごとに探索するシフト値を指定するリストです。
+`nums[level]` の値がそのまま `level` 階層のシフト候補として使用されるため、
+候補を限定した探索や、特定のシフト値だけを対象にした検証に利用できます。
+
+```python
+from HLSearch import SearchConfig
+
+config = SearchConfig(
+    primes=[2, 3],
+    nums=[[1], [2]],
+    depth=2,
+)
+```
 
 ## 例: 既定設定の確認
 ```powershell
