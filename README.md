@@ -20,11 +20,21 @@
 - Python 3.10 以上
 - NumPy
 - tqdm
+- CUDA 利用時は CuPy と NVIDIA CUDA ドライバ（任意）
 
 ## インストール
 ```powershell
 python -m pip install numpy tqdm
 ```
+
+CUDA を利用する場合は、環境に合った CuPy パッケージもインストールしてください。
+
+```powershell
+python -m pip install cupy-cuda12x
+```
+
+`State` は CUDA デバイスと CuPy が利用可能な場合に popcount 計算へ CUDA
+を自動適用します。利用できない環境では NumPy に自動的にフォールバックします。
 
 ## 基本的な実行方法
 ```powershell

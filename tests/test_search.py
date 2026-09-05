@@ -68,3 +68,13 @@ def test_state_rejects_checkpoint_with_different_settings(tmp_path):
 
     with pytest.raises(ValueError, match="探索設定"):
         changed_state._load_checkpoint(path)
+
+
+def test_count_nonzero_matches_numpy_when_cuda_is_unavailable():
+    config = SearchConfig(primes=[2], depth=1, cols=8)
+    state = State(config, build_shift_table([2], 8))
+    mask = np.array([True, False, True, True, False, False, True, False])
+
+    state._cuda = None
+
+    assert state._count_nonzero(mask) == 4

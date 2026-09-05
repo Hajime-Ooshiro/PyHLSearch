@@ -229,6 +229,7 @@ class State:
         "checkpoint_path",
         "checkpoint_interval",
         "_stack",
+        "_cuda",
     )
 
     def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], limit: int | None = None, max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000) -> None:
@@ -272,6 +273,7 @@ class State:
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
         self.checkpoint_interval = checkpoint_interval
         self._stack: list[list] = []
+        self._cuda = self._init_cuda()
         self.pbar = tqdm(
             desc="search",
             unit="node",
@@ -279,6 +281,26 @@ class State:
             dynamic_ncols=True,
             mininterval=self.config.progress_mininterval,
         )
+
+    @staticmethod
+    def _init_cuda():
+        """利用可能な CUDA デバイスを検出し、利用できなければ CPU に戻す。"""
+        try:
+            import cupy as cp
+        except ImportError:
+            return None
+        try:
+            if cp.cuda.runtime.getDeviceCount() < 1:
+                return None
+        except RuntimeError:
+            return None
+        logger.info("CUDA backend を使用します: %s", cp.cuda.runtime.runtimeGetVersion())
+        return cp
+
+    def _count_nonzero(self, mask: NDArray[np.bool_]) -> int:
+        if self._cuda is None:
+            return int(np.count_nonzero(mask))
+        return int(self._cuda.count_nonzero(self._cuda.asarray(mask)).get())
 
     def _mask_to_int(self, mask: NDArray[np.bool_]) -> int:
         """bool配列をビット列とみなして多倍長整数に変換する。
@@ -458,6 +480,9 @@ class State:
         depth : int
             探索する階層数(= 使用する素数の個数)。可変。
         """
+        if depth == 0:
+            return
+
         key = self.key
         stack = self._stack
         if not stack:
@@ -497,7 +522,7 @@ class State:
             try:
                 row_complement = self.shift_table[level][i]  # ~row_nonzero(NOT演算済み、事前作成済み)
                 node_mask = base_mask & row_complement
-                count = int(np.count_nonzero(node_mask))
+                count = self._count_nonzero(node_mask)
 
                 if count < max(self.limit, self.max_count):
                     key.pop()
