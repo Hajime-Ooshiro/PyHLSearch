@@ -246,6 +246,16 @@ class State:
             )
         self.config = config
         primes = config.primes
+        if len(shift_table) < config.depth:
+            raise ValueError(
+                f"shift_table の階層数({len(shift_table)})が depth({config.depth})未満です"
+            )
+        for level, (prime, table) in enumerate(zip(primes[:config.depth], shift_table)):
+            if table.ndim != 2 or table.shape != (prime, config.cols):
+                raise ValueError(
+                    f"shift_table[{level}] の形状が不正です: "
+                    f"期待値=({prime}, {config.cols}), 実際={table.shape}"
+                )
         self.limit = config.limit if limit is None else limit
         self.max_depth = config.max_depth if max_depth is None else max_depth
         self.target = config.target if target is None else target
@@ -308,7 +318,15 @@ class State:
             })
 
         saved = {
-            "version": 1,
+            "version": 2,
+            "settings": {
+                "primes": list(self.primes),
+                "depth": self.config.depth,
+                "cols": self.config.cols,
+                "limit": self.limit,
+                "max_depth": self.max_depth,
+                "target": self.target,
+            },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
             "max_count": self.max_count,
@@ -344,8 +362,21 @@ class State:
                 "新しい設定で最初から探索をやり直してください。"
             ) from exc
 
-        if saved.get("version") != 1:
+        if saved.get("version") != 2:
             raise ValueError(f"unsupported checkpoint version: {saved.get('version')}")
+        expected_settings = {
+            "primes": list(self.primes),
+            "depth": self.config.depth,
+            "cols": self.config.cols,
+            "limit": self.limit,
+            "max_depth": self.max_depth,
+            "target": self.target,
+        }
+        if saved.get("settings") != expected_settings:
+            raise ValueError(
+                f"{path} の探索設定が現在の設定と一致しません: "
+                f"保存値={saved.get('settings')!r}, 現在値={expected_settings!r}"
+            )
 
         self.key = list(saved.get("key", []))
         self.zero_mask = self._int_to_mask(int(saved.get("zero_mask", 0)), self.config.cols)
