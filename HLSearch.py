@@ -458,9 +458,6 @@ class State:
         depth : int
             探索する階層数(= 使用する素数の個数)。可変。
         """
-        if depth == 0:
-            return
-
         key = self.key
         stack = self._stack
         if not stack:
@@ -531,6 +528,8 @@ class State:
 
     def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
         """primes[:depth] を使って深さ depth までの探索を実行するエントリポイント"""
+        if depth is not None and depth < 0:
+            raise ValueError(f"depth は0以上である必要があります: depth={depth}")
         depth_to_use = self.config.depth if depth is None else depth
         if depth_to_use > len(self.primes):
             raise ValueError(f"depth={depth_to_use} が使用可能な素数の個数({len(self.primes)})を超えています")
