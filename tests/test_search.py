@@ -28,6 +28,25 @@ def test_search_uses_prime_ranges_as_shift_candidates():
     assert all(0 <= shift < primes[level] for path in state.shifts for level, shift in enumerate(path))
 
 
+def test_search_tries_shift_candidates_in_descending_order():
+    primes = [3]
+    cols = 4
+    config = SearchConfig(
+        primes=primes,
+        depth=1,
+        limit=0,
+        target=cols,
+        max_depth=1,
+        cols=cols,
+    )
+    shift_table = [np.ones((primes[0], cols), dtype=bool)]
+
+    state = State(config, shift_table)
+    state.run()
+
+    assert state.shifts == [[2], [1], [0]]
+
+
 def test_search_with_zero_depth_finishes_without_exploring():
     config = SearchConfig(
         primes=[],

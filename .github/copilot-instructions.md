@@ -1,180 +1,50 @@
 # Copilot Instructions for HLSearch
 
-## Quick Reference
+## Project Scope
 
-**Repository Purpose:** Prime number shift search exploring the Hardy-Littlewood conjecture using multiple implementations (NumPy, Numba JIT, bit-packed Python, and beam search).
+`HLSearch.py` is the tracked, standard implementation: a NumPy-based search program for prime shifts related to the Hardy-Littlewood second conjecture. Treat `bk/` as ignored local experimental/archive material, not as a supported implementation or a source of required compatibility.
 
-### Build/Test/Lint Commands
+## Commands
 
-- **Run all tests:** `pytest -q`
-- **Run specific test:** `pytest -q tests/test_integration.py::TestIntegration::test_solution_path_validation`
-- **Run with verbose output:** `pytest -v`
-- **Linting:** No linter configured; Python code follows implicit conventions (docstrings included, type hints used)
-
-### Running the Search Program
+Run commands from the repository root.
 
 ```powershell
-# Default NumPy implementation
-python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
+# Entire collected test suite
+pytest -q
 
-# Quick test (small scale)
+# A single test
+pytest -q tests/test_search.py::test_search_uses_prime_ranges_as_shift_candidates
+
+# A single integration test
+pytest -q tests/test_integration.py::TestIntegration::test_solution_path_validation
+
+# Small CLI search suitable for a smoke run
 python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
 
-# Numba JIT-accelerated version
-python HLSearch_Numba.py --numba --depth 8 --limit 400 --max-depth 249 --target 447
-
-# Pure-Python bit-packed version (no NumPy dependency)
-python HLSearch_bitpack.py --depth 8 --limit 400 --max-depth 249 --target 447
+# Standard search
+python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
 ```
 
-**Common CLI options:**
-- `-d, --depth`: Search depth (number of primes to use)
-- `-l, --limit`: Pruning threshold (lower bound)
-- `--max-depth`: Maximum depth limit
-- `-t, --target`: Target value at max depth
-- `-p, --primes-count`: Use only first N primes
-- `--cols`: Column count (search width)
-- `--output`: Output file path for results
-- `--checkpoint`: Save checkpoint to JSON file
-- `--resume`: Resume from checkpoint JSON
-- `--log-level`: Console log level (DEBUG/INFO/WARNING/ERROR)
-- `--numba`: Enable Numba JIT (HLSearch_Numba.py only)
-- `--cuda`: Prefer CUDA (HLSearch_Numba.py only)
+There is no configured linter or build step. The project requires Python 3.10+, NumPy, and tqdm. CuPy is optional: when it and a CUDA device are available, `State` uses it only for popcount; otherwise it uses NumPy.
 
-## Architecture & Design
+## Architecture
 
-### Four Implementation Variants
+The application is intentionally monolithic. `SearchConfig` owns validated search parameters and defaults, `generate_primes()` creates the ordered candidate primes, and `build_base_rows()` creates a Boolean matrix where each row represents one prime. `build_shift_table()` transforms that into the precomputed complemented candidates consumed by the search: `shift_table[level][shift]` has shape `(cols,)`, and each level's table has shape `(prime, cols)`.
 
-1. **HLSearch.py** (Primary)
-   - NumPy-based with boolean arrays for bitmasks
-   - Optimal for standard workloads
-   - State class maintains iterative DFS (no recursion) to avoid call stack limits
-   - Supports checkpoint/resume functionality
+`State` performs an iterative depth-first search over shift choices. It intersects a parent `zero_mask` with one precomputed row complement to produce `node_mask`, counts active entries, and prunes branches below `max(limit, max_count)`. At leaves, it records paths whose count equals `target`; `max_count`, `results`, and `shifts` are the public result state. The CLI creates the config and table, runs the state, then writes the result file as `max_count`, `results`, and one shift list per line.
 
-2. **HLSearch_Numba.py** (Performance)
-   - Wraps core bitmask operations in Numba `@njit` with optional `parallel=True`
-   - GPU support via `numba.cuda` if available
-   - Automatically falls back to NumPy if Numba unavailable
-   - Drop-in replacement CLI
+Checkpointing serializes the entire resumable DFS state to version-2 JSON: settings, `key`, masks, result aggregates, node count, and stack frames. Boolean masks are encoded through `np.packbits` into Python integers so widths above 64 bits round-trip safely. A resumed search rejects checkpoints whose settings do not exactly match the active search.
 
-3. **HLSearch_bitpack.py** (Lightweight)
-   - Pure Python using `int` bitwise operations
-   - No NumPy dependency
-   - Uses built-in `int.bit_count()` for popcount
-   - Identical search logic and CLI to main implementation
+## Repository Conventions
 
-4. **HLSearch_Beam.py** (Experimental)
-   - Beam search + GPU/CPU parallelization
-   - `CPUBackend` for multi-threaded execution
-   - Work-in-progress optimization approach
+- Keep the public module surface in `HLSearch.py`: `SearchConfig`, `State`, `generate_primes`, `build_base_rows`, `build_shift_table`, `shift_array`, `setup_logging`, and `parse_args`. Add validation for configuration or table-shape contracts at construction time, following the existing `ValueError` messages.
+- Preserve Boolean NumPy masks throughout the NumPy implementation. `build_shift_table()` stores complements up front, so the hot search loop must use `base_mask & shift_table[level][i]` rather than recomputing shifts or complements.
+- The DFS stack uses mutable frames in the exact form `[level, base_mask, next_idx, next_p]`. `key` and `_stack` must remain synchronized: while an active branch is represented, `len(key) == len(_stack) - 1`. Save a checkpoint only after resolving the current branch and restoring or extending this relationship.
+- Keep checkpoint files atomic: write the JSON to `<checkpoint>.tmp`, then replace the target. Maintain version `2` and its exact `settings` compatibility check when changing the saved state.
+- `State.run()` always closes its tqdm progress bar and writes a final checkpoint when configured. Preserve that cleanup behavior when adjusting search control flow.
+- Tests import the root `HLSearch` module directly. Use small prime lists and column counts for deterministic tests, build tables with the same primes and `cols` as `SearchConfig`, and use `tmp_path` for output/checkpoint files.
+- `pytest.ini` restricts collection to `tests/` and excludes `bk/`. Do not rely on code under `bk/` for test coverage.
 
-### Core Data Flow
+## Runtime Behavior
 
-```
-SearchConfig (settings)
-  ↓
-generate_primes(limit) → primes list
-  ↓
-build_base_rows(primes, cols) → base bool array [len(primes), cols]
-  ↓
-build_shift_table(primes, cols) → precomputed shift candidates [[p, cols], ...]
-  ↓
-State(config, shift_table) → iterative DFS explorer
-  ↓
-state.run(depth) → explores all paths, tracks max_count + shifts
-  ↓
-Results: max_count (best zero-count), results (count of optimal paths), shifts (path details)
-```
-
-### State Class: Iterative DFS Engine
-
-The `State` class replaces recursion with an explicit stack (`_stack`) to avoid Python's recursion limit. This is critical for large `depth` values (up to 249).
-
-**Key attributes:**
-- `zero_mask`: Active bitmask at current search depth (AND of row complements)
-- `key`: Current path as list of shift indices
-- `shift_table`: Pre-computed complemented shift arrays (indexed by [level][shift_value])
-- `_stack`: Execution stack storing `[level, base_mask, next_idx, next_p]` frames
-
-**Search invariant:**
-- The stack must stay synchronized with `key`: `len(key) == len(stack) - 1`
-- Checkpoint/resume must occur only when this invariant holds
-- `report_progress()` (which handles checkpointing) is called only after a branching decision is finalized
-
-### Checkpoint/Resume (v1.0.6+)
-
-- Format: JSON with full internal state (`key`, stack frames, bitmasks)
-- Resuming guarantees bit-exact reproduction of sequential execution
-- Bitpacking: Bitmasks are converted to hex strings to avoid `int` overflow on deserialization
-
-## Key Conventions
-
-### Module Structure
-- Monolithic design: single .py file per implementation variant for independence
-- Public API in docstrings at module level
-- `SearchConfig` (dataclass, frozen) holds all configuration
-- Validation happens in `SearchConfig.__post_init__()` at construction time
-
-### Naming Patterns
-- `primes`: Sorted list of prime candidates for depth/column selection
-- `cols`: Column count (search width/problem dimension)
-- `depth`: Actual depth used in current search
-- `max_depth`: Upper bound on depth for target-reaching logic
-- `target`: Goal threshold at max_depth (stops early if exceeded)
-- `limit`: Pruning lower bound (branches with count < limit are abandoned)
-- `base_rows`: Raw boolean arrays before complement/shift (shape: [len(primes), cols])
-- `shift_table`: Pre-computed complements of shifted rows (indexed [level][shift_idx])
-- `zero_mask`: Combined bitmask of all non-zero columns at current depth
-- `node_mask`: Intersection of zero_mask and current row complement
-- `count`: Popcount of a bitmask (number of non-zero bits)
-
-### Logging & Progress
-- Logger: module-level `logger` configured once via `setup_logging()`
-- Console level: controlled by `--log-level`; file always DEBUG
-- Progress bar: `tqdm` with `mininterval` to reduce update overhead
-- Log file: `HLSearch.log` in repo root; rotated at 10MB (keeps 3 backups)
-
-### Testing
-- Single test file: `tests/test_integration.py`
-- Uses `run_state()` helper to set up, run, and verify a complete search
-- `monkeypatch` to override module-level `shift_path_file` for isolation
-- Verifies: path validity, bitmask consistency, output format correctness
-
-## Dependency Notes
-
-**Required:**
-- Python 3.10+
-- `numpy` (for HLSearch.py and HLSearch_Numba.py)
-- `tqdm`
-
-**Optional:**
-- `numba` (for HLSearch_Numba.py; falls back to NumPy if absent)
-- CUDA Toolkit (if using `--cuda` with Numba)
-
-Install all:
-```powershell
-python -m pip install numpy tqdm numba
-```
-
-## Development Tips
-
-### Adding a New Search Variant
-- Copy the main module and keep `SearchConfig`, `generate_primes()`, and `State` interface identical
-- Modify only the internal representation (e.g., array format, computation kernels)
-- Preserve CLI argument parsing and logging setup
-- Test with `run_state()` fixture to ensure API compatibility
-
-### Debugging Search Logic
-- Use `--log-level DEBUG` to see node expansion trace
-- Check `HLSearch.log` for full session history (includes failed branches if needed)
-- Verify checkpoint/resume correctness: run `--checkpoint`, interrupt, then `--resume` and compare outputs
-
-### Performance Profiling
-- Use `timeit` on `build_shift_table()` and `state.run()` separately
-- Numba: warm up with a small run first (JIT compilation overhead)
-- bit-packed variant: compare `int.bit_count()` performance across Python versions
-
-### Large-Scale Runs
-- Checkpoint frequently (`--checkpoint` with short `--checkpoint-interval` if working with huge depths)
-- Monitor memory: `State` stores `shift_table` (size ≈ sum of primes × cols bytes)
-- For `depth > 100`, prefer bit-packed or Numba variants for speed and memory efficiency
+Use `--checkpoint path.json` to save periodic state and `--resume path.json` to resume it with identical parameters. The CLI log is `HLSearch.log` beside `HLSearch.py`; file logging is always DEBUG while `--log-level` controls console output. Search results are written to `--output` (default: `shift_path.txt`).

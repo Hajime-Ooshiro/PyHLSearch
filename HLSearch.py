@@ -348,6 +348,7 @@ class State:
                 "limit": self.limit,
                 "max_depth": self.max_depth,
                 "target": self.target,
+                "traversal_order": "descending",
             },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
@@ -393,6 +394,7 @@ class State:
             "limit": self.limit,
             "max_depth": self.max_depth,
             "target": self.target,
+            "traversal_order": "descending",
         }
         if saved.get("settings") != expected_settings:
             raise ValueError(
@@ -464,11 +466,11 @@ class State:
                          「親までの zero_mask」。元の再帰版での
                          prev_mask(= self.zero_mask の呼び出し前の値)
                          に対応する。
-            next_idx   : 次に試す `range(next_p)` 上のインデックス。
+            next_idx   : 次に試す `range(next_p - 1, -1, -1)` 上のインデックス。
                          元の再帰版の re-entrant な `for i in range(...)`
                          ループの「途中状態」をこれで表現する。
             next_p     : この階層で使う素数(= primes[level])。
-                         next_idx の終了条件として保持している。
+                         next_idx の開始値としても保持している。
 
         1つの節点(= key の1要素)を「探索し尽くして親に戻る」タイミングは、
         自分の子階層で next_idx が next_p に達した瞬間として検出し、
@@ -486,12 +488,12 @@ class State:
         key = self.key
         stack = self._stack
         if not stack:
-            stack.append([0, self.zero_mask.copy(), 0, self.primes[0]])
+            stack.append([0, self.zero_mask.copy(), self.primes[0] - 1, self.primes[0]])
 
         while stack:
             frame = stack[-1]
             level, base_mask, next_idx, next_p = frame
-            if next_idx >= next_p:
+            if next_idx < 0:
                 finished_base_mask = stack.pop()[1]
                 if stack:
                     key.pop()
@@ -501,7 +503,7 @@ class State:
                 continue
 
             i = next_idx
-            frame[2] = next_idx + 1  # 同じフレームをその場で更新(コピー不要)
+            frame[2] = next_idx - 1  # 同じフレームをその場で更新(コピー不要)
 
             key.append(i)
             self.node_count += 1
@@ -547,7 +549,7 @@ class State:
 
                 self.zero_mask = node_mask
                 next_p_child = self.primes[level + 1]
-                stack.append([level + 1, node_mask, 0, next_p_child])
+                stack.append([level + 1, node_mask, next_p_child - 1, next_p_child])
             finally:
                 self.report_progress()
 
