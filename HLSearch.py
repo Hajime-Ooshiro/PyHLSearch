@@ -227,6 +227,7 @@ class State:
         "shifts",
         "target_shifts",
         "max_shifts",
+        "target_results",
         "results",
         "start_time",
         "node_count",
@@ -275,6 +276,7 @@ class State:
         self.shifts: list[list[int]] = []
         self.target_shifts: list[list[int]] = []
         self.max_shifts: list[list[int]] = []
+        self.target_results: int = 0
         self.results: int = 0
         self.start_time: float = time.time()
         self.node_count: int = 0
@@ -355,12 +357,13 @@ class State:
                 "target": self.target,
                 "traversal_order": "descending",
                 "mask_format": "uint64-little-endian",
-                "result_format": "target-and-maximum-paths",
+                "result_format": "target-and-maximum-path-counts",
             },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
             "max_count": self.max_count,
             "results": self.results,
+            "target_results": self.target_results,
             "shifts": self.shifts,
             "target_shifts": self.target_shifts,
             "max_shifts": self.max_shifts,
@@ -404,7 +407,7 @@ class State:
             "target": self.target,
             "traversal_order": "descending",
             "mask_format": "uint64-little-endian",
-            "result_format": "target-and-maximum-paths",
+            "result_format": "target-and-maximum-path-counts",
         }
         if saved.get("settings") != expected_settings:
             raise ValueError(
@@ -416,6 +419,7 @@ class State:
         self.zero_mask = self._int_to_mask(int(saved.get("zero_mask", 0)), self.config.cols)
         self.max_count = int(saved.get("max_count", 0))
         self.results = int(saved.get("results", 0))
+        self.target_results = int(saved.get("target_results", 0))
         self.target_shifts = list(saved.get("target_shifts", []))
         self.max_shifts = list(saved.get("max_shifts", []))
         self._update_shifts()
@@ -444,7 +448,7 @@ class State:
             self.pbar.update(self.config.postfix_update_interval)
             self.pbar.set_postfix(
                 best=self.max_count,
-                hits=self.results,
+                hits=self.target_results,
                 depth=len(self.key),
                 key=list(self.key),
                 refresh=force,
@@ -547,14 +551,16 @@ class State:
                         message = f"target depth={depth} key={list(key)} count={count}"
                         self.pbar.write(message)
                         logger.info(message)  # ログファイルにも残す(pbar.writeだけだと画面にしか出ない)
-                        self.results += 1
+                        self.target_results += 1
                         self.target_shifts.append(list(key))
 
                     if not (depth == self.max_depth and count > self.target):
                         if count > self.max_count:
                             self.max_count = count
+                            self.results = 1
                             self.max_shifts = [list(key)]
                         elif count == self.max_count:
+                            self.results += 1
                             self.max_shifts.append(list(key))
                     self._update_shifts()
 
@@ -673,13 +679,15 @@ if __name__ == "__main__":
     result_state = state.run(depth, resume_from=args.resume)
 
     logger.info("最大値: %d", result_state.max_count)
-    logger.info("該当件数: %d", result_state.results)
+    logger.info("最大値パス数: %d", result_state.results)
+    logger.info("target到達件数: %d", result_state.target_results)
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         f.write(f"max_count:{result_state.max_count}\n")
         f.write(f"results:{result_state.results}\n")
+        f.write(f"target_results:{result_state.target_results}\n")
         for shift in result_state.shifts:
             f.write(f"{shift}\n")
 

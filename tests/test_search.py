@@ -99,6 +99,7 @@ def test_search_keeps_target_and_maximum_paths_without_duplicates():
     state.run()
 
     assert state.results == 1
+    assert state.target_results == 1
     assert state.target_shifts == [[1]]
     assert state.max_shifts == [[0]]
     assert state.shifts == [[1], [0]]

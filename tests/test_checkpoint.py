@@ -21,6 +21,7 @@ with tempfile.TemporaryDirectory() as tmp:
     state.zero_mask = np.array([0b01010101], dtype=np.uint64)
     state.max_count = 7
     state.results = 2
+    state.target_results = 1
     state.shifts = [[0, 1], [1, 0]]
     state.target_shifts = [[0, 1]]
     state.max_shifts = [[1, 0]]

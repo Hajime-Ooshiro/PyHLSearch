@@ -9,6 +9,7 @@
 - `State` クラスで反復 DFS を実装し、再帰制限やコールスタックの問題を避ける。
 - シフトテーブルと探索マスクを `uint64` ワードへビットパックし、AND と popcount をワード単位で処理する。
 - 現在の最良値 `max_count` を下回る枝を打ち切る。
+- `results` は最終最大値を持つパス数、`target_results` は `target` 到達件数、`shifts` は両パス群の重複なし和集合を保持する。
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
 - 現在のリポジトリの標準実装は `HLSearch.py` であり、他の変種は過去の実験コードとして `bk/` に保管されている。
 
@@ -67,7 +68,20 @@ python HLSearch.py --depth 8 --max-depth 249 --target 447 --resume resume.json
 
 - `--checkpoint`: 途中経過を JSON 形式で保存する
 - `--resume`: 保存済み checkpoint から探索を再開する
-- 旧形式の `key=value` checkpoint、昇順探索時に作成した JSON checkpoint、ビットパック化前に保存した JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
+- 旧形式の `key=value` checkpoint、昇順探索時に作成した JSON checkpoint、ビットパック化前または `target_results` 導入前に保存した JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
+
+## 結果出力
+
+`--output`（既定: `shift_path.txt`）には、次の形式で結果を書き出します。
+
+```text
+max_count:<最終最大値>
+results:<最終最大値パス数>
+target_results:<target 到達件数>
+[<shift 0>, <shift 1>, ...]
+```
+
+シフトパスは `target` 到達パスと最終最大値パスの重複なし和集合です。
 
 ## 代表的なオプション
 

@@ -25,6 +25,7 @@ def run_state(primes, depth, target, max_depth, cols, output_path):
     with output_path.open("w", encoding="utf-8") as f:
         f.write(f"max_count:{state.max_count}\n")
         f.write(f"results:{state.results}\n")
+        f.write(f"target_results:{state.target_results}\n")
         for path in state.shifts:
             f.write(f"{path}\n")
     return state
@@ -102,6 +103,7 @@ def test_state_checkpoint_roundtrip(tmp_path):
     state.zero_mask = np.array([0b01010101], dtype=np.uint64)
     state.max_count = 7
     state.results = 2
+    state.target_results = 1
     state.shifts = [[0, 1], [1, 0]]
     state.target_shifts = [[0, 1]]
     state.max_shifts = [[1, 0]]
@@ -118,6 +120,7 @@ def test_state_checkpoint_roundtrip(tmp_path):
     assert restored.key == [0, 1]
     assert restored.max_count == 7
     assert restored.results == 2
+    assert restored.target_results == 1
     assert restored.node_count == 42
     assert restored._stack[0][0] == 0
     assert restored._stack[0][2] == 1
