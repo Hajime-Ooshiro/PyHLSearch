@@ -37,25 +37,25 @@ CUDA を利用する場合は、環境に合った CuPy パッケージもイン
 python -m pip install cupy-cuda12x
 ```
 
-`State` は CUDA デバイスと CuPy が利用可能な場合に popcount 計算へ CUDA を自動適用します。利用できない環境では NumPy に自動的にフォールバックします。
+既定では NumPy による CPU popcount を使用します。CUDA デバイスと CuPy が利用可能な環境で CUDA popcount を試す場合は、`--cuda` を指定してください。CUDA を利用できない場合は NumPy にフォールバックします。
 
 ## 基本的な実行方法
 
 ```powershell
-python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
+python HLSearch.py --depth 8 --max-depth 249 --target 447
 ```
 
 ### 小規模テスト
 
 ```powershell
-python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch.py --depth 3 --cols 50 --output shift_path.txt
 ```
 
 ### 中断・再開
 
 ```powershell
-python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --checkpoint resume.json
-python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --resume resume.json
+python HLSearch.py --depth 8 --max-depth 249 --target 447 --checkpoint resume.json
+python HLSearch.py --depth 8 --max-depth 249 --target 447 --resume resume.json
 ```
 
 - `--checkpoint`: 途中経過を JSON 形式で保存する
@@ -67,11 +67,12 @@ python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447 --resume r
 - `-d, --depth`: 探索する深さ
 - `-t, --target`: 最大深さでの目標値
 - `--cols`: 列数
+- `--cuda`: CuPy/CUDA による popcount を有効化
 - `--output`: 結果出力先ファイル
 - `--resume`: checkpoint から再開
 
 ```powershell
-python HLSearch.py --depth 4 --cols 500 --limit 0 --output shift_path.txt
+python HLSearch.py --depth 4 --cols 500 --output shift_path.txt
 ```
 
 ## テスト

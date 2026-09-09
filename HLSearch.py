@@ -58,7 +58,6 @@ class SearchConfig:
     Attributes:
         primes: 探索対象の素数リスト。デフォルトでは 1579 以下の素数を生成する。
         depth: 深さとして使う素数の数。
-        limit: 枝刈りの下限値。
         max_depth: 深さの上限。
         target: `depth == max_depth` のときの打ち切り目標値.
         cols: 列数。
@@ -68,7 +67,6 @@ class SearchConfig:
     """
     primes: list[int] = field(default_factory=lambda: generate_primes(1579))
     depth: int = 8
-    limit: int = 447
     max_depth: int = 249
     target: int = 447
     cols: int = 3159
@@ -86,8 +84,6 @@ class SearchConfig:
             raise ValueError(
                 f"depth={self.depth} が primes の要素数({len(self.primes)})を超えています"
             )
-        if self.limit < 0:
-            raise ValueError(f"limit は0以上である必要があります: limit={self.limit}")
         if self.postfix_update_interval <= 0:
             raise ValueError(
                 f"postfix_update_interval は正の整数である必要があります: "
@@ -131,8 +127,6 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -
 
 
 # COLS: int = cfg.cols
-# LIMIT: int = cfg.limit
-
 # DEPTH: int = cfg.depth
 # MAX_DEPTH: int = cfg.max_depth
 # TARGET: int = cfg.target
@@ -217,7 +211,6 @@ class State:
         "primes",
         "shift_table",
         "zero_mask",
-        "limit",
         "max_depth",
         "target",
         "max_count",
@@ -232,15 +225,14 @@ class State:
         "_cuda",
     )
 
-    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], limit: int | None = None, max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000) -> None:
+    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False) -> None:
         # SearchConfig 以外(生の primes 列)が渡された場合は、まず SearchConfig に
         # 正規化してしまう。これにより以降の属性代入を両ケースで共通化でき、
-        # limit/max_depth/target の決定ロジックを二重に書かずに済む。
+        # max_depth/target の決定ロジックを二重に書かずに済む。
         if not isinstance(config, SearchConfig):
             config = SearchConfig(
                 primes=config,
                 depth=len(config),
-                limit=cfg.limit if limit is None else limit,
                 max_depth=cfg.max_depth if max_depth is None else max_depth,
                 target=cfg.target if target is None else target,
                 cols=cfg.cols,
@@ -257,7 +249,6 @@ class State:
                     f"shift_table[{level}] の形状が不正です: "
                     f"期待値=({prime}, {config.cols}), 実際={table.shape}"
                 )
-        self.limit = config.limit if limit is None else limit
         self.max_depth = config.max_depth if max_depth is None else max_depth
         self.target = config.target if target is None else target
 
@@ -273,7 +264,7 @@ class State:
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
         self.checkpoint_interval = checkpoint_interval
         self._stack: list[list] = []
-        self._cuda = self._init_cuda()
+        self._cuda = self._init_cuda() if use_cuda else None
         self.pbar = tqdm(
             desc="search",
             unit="node",
@@ -345,7 +336,6 @@ class State:
                 "primes": list(self.primes),
                 "depth": self.config.depth,
                 "cols": self.config.cols,
-                "limit": self.limit,
                 "max_depth": self.max_depth,
                 "target": self.target,
                 "traversal_order": "descending",
@@ -391,7 +381,6 @@ class State:
             "primes": list(self.primes),
             "depth": self.config.depth,
             "cols": self.config.cols,
-            "limit": self.limit,
             "max_depth": self.max_depth,
             "target": self.target,
             "traversal_order": "descending",
@@ -526,7 +515,8 @@ class State:
                 node_mask = base_mask & row_complement
                 count = self._count_nonzero(node_mask)
 
-                if count < max(self.limit, self.max_count):
+                remains = depth - level                 
+                if count + remains <= self.max_count:
                     key.pop()
                     continue
 
@@ -588,8 +578,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("-d", "--depth", type=int, default=cfg.depth,
                         help="探索する階層数(使用する素数の個数)。primesの長さ以下である必要がある。")
-    parser.add_argument("-l", "--limit", type=int, default=cfg.limit,
-                        help="打ち切りに使うcountの下限値。これ未満の枝は探索しない。")
     parser.add_argument("--max-depth", type=int, default=cfg.max_depth,
                         help="depthがこの値と一致するとき、--targetによる追加打ち切りを有効にする。")
     parser.add_argument("-t", "--target", type=int, default=cfg.target,
@@ -598,6 +586,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="PRIMESの先頭N個だけを使う(未指定なら全て使用)。")
     parser.add_argument("--cols", type=int, default=cfg.cols,
                         help="列数(=探索対象の長さ)。")
+    parser.add_argument("--cuda", action="store_true",
+                        help="CuPy/CUDA を popcount に使用する(既定では CPU を使用)。")
     parser.add_argument("--output", type=str, default=shift_path_file,
                         help="最適シフトパスの出力先ファイル。")
     parser.add_argument("--mininterval", type=float, default=cfg.progress_mininterval,
@@ -620,7 +610,6 @@ if __name__ == "__main__":
     LOG_PATH = setup_logging(base, console_level=args.log_level)
 
     depth = args.depth
-    limit = args.limit
     max_depth = args.max_depth
     target = args.target
     cols = args.cols
@@ -633,7 +622,6 @@ if __name__ == "__main__":
     config = SearchConfig(
         primes=primes,
         depth=depth,
-        limit=limit,
         max_depth=max_depth,
         target=target,
         cols=cols,
@@ -643,10 +631,23 @@ if __name__ == "__main__":
     )
 
     logger.info("HLSearch 開始 (log file: %s)", LOG_PATH)
-    logger.info("設定: depth=%d limit=%d max_depth=%d target=%d primes_count=%d", depth, limit, max_depth, target, len(primes))
+    logger.info(
+        "設定: depth=%d max_depth=%d target=%d primes_count=%d cuda=%s",
+        depth,
+        max_depth,
+        target,
+        len(primes),
+        args.cuda,
+    )
 
     shift_table = build_shift_table(primes[:depth], cols)
-    state = State(config, shift_table, checkpoint_path=args.checkpoint, checkpoint_interval=max(1, min(10000, max(10, depth * 100))))
+    state = State(
+        config,
+        shift_table,
+        checkpoint_path=args.checkpoint,
+        checkpoint_interval=max(1, min(10000, max(10, depth * 100))),
+        use_cuda=args.cuda,
+    )
     result_state = state.run(depth, resume_from=args.resume)
 
     logger.info("最大値: %d", result_state.max_count)

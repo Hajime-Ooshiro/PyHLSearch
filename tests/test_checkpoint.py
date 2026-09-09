@@ -9,7 +9,7 @@ sys.path.insert(0, '.')
 import HLSearch as hl
 import numpy as np
 
-config = hl.SearchConfig(primes=[2,3], depth=2, limit=0, target=10, max_depth=2, cols=8)
+config = hl.SearchConfig(primes=[2,3], depth=2, target=10, max_depth=2, cols=8)
 shift_table = hl.build_shift_table([2,3], 8)
 
 with tempfile.TemporaryDirectory() as tmp:

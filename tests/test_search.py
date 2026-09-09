@@ -1,7 +1,29 @@
 import numpy as np
 import pytest
 
-from HLSearch import SearchConfig, State, build_shift_table
+from HLSearch import SearchConfig, State, build_shift_table, parse_args
+
+
+def test_parse_args_uses_cpu_by_default_and_can_enable_cuda():
+    default_args = parse_args([])
+    cuda_args = parse_args(["--cuda"])
+
+    assert not hasattr(default_args, "limit")
+    assert default_args.cuda is False
+    assert cuda_args.cuda is True
+
+
+def test_state_only_initializes_cuda_when_requested(monkeypatch):
+    config = SearchConfig(primes=[2], depth=1, cols=8)
+    shift_table = build_shift_table([2], 8)
+    cuda_backend = object()
+    monkeypatch.setattr(State, "_init_cuda", staticmethod(lambda: cuda_backend))
+
+    cpu_state = State(config, shift_table)
+    cuda_state = State(config, shift_table, use_cuda=True)
+
+    assert cpu_state._cuda is None
+    assert cuda_state._cuda is cuda_backend
 
 
 def test_search_uses_prime_ranges_as_shift_candidates():
@@ -12,7 +34,6 @@ def test_search_uses_prime_ranges_as_shift_candidates():
     config = SearchConfig(
         primes=primes,
         depth=2,
-        limit=0,
         target=2,
         max_depth=2,
         cols=cols,
@@ -34,7 +55,6 @@ def test_search_tries_shift_candidates_in_descending_order():
     config = SearchConfig(
         primes=primes,
         depth=1,
-        limit=0,
         target=cols,
         max_depth=1,
         cols=cols,
@@ -51,7 +71,6 @@ def test_search_with_zero_depth_finishes_without_exploring():
     config = SearchConfig(
         primes=[],
         depth=0,
-        limit=0,
         target=0,
         max_depth=0,
         cols=8,
@@ -89,11 +108,9 @@ def test_state_rejects_checkpoint_with_different_settings(tmp_path):
         changed_state._load_checkpoint(path)
 
 
-def test_count_nonzero_matches_numpy_when_cuda_is_unavailable():
+def test_count_nonzero_uses_numpy_by_default():
     config = SearchConfig(primes=[2], depth=1, cols=8)
     state = State(config, build_shift_table([2], 8))
     mask = np.array([True, False, True, True, False, False, True, False])
-
-    state._cuda = None
 
     assert state._count_nonzero(mask) == 4

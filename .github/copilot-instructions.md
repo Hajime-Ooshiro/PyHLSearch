@@ -19,19 +19,19 @@ pytest -q tests/test_search.py::test_search_uses_prime_ranges_as_shift_candidate
 pytest -q tests/test_integration.py::TestIntegration::test_solution_path_validation
 
 # Small CLI search suitable for a smoke run
-python HLSearch.py --depth 3 --cols 50 --limit 0 --output shift_path.txt
+python HLSearch.py --depth 3 --cols 50 --output shift_path.txt
 
 # Standard search
-python HLSearch.py --depth 8 --limit 400 --max-depth 249 --target 447
+python HLSearch.py --depth 8 --max-depth 249 --target 447
 ```
 
-There is no configured linter or build step. The project requires Python 3.10+, NumPy, and tqdm. CuPy is optional: when it and a CUDA device are available, `State` uses it only for popcount; otherwise it uses NumPy.
+There is no configured linter or build step. The project requires Python 3.10+, NumPy, and tqdm. CuPy is optional: `State` uses it only for popcount when the CLI is invoked with `--cuda` and a CUDA device is available; otherwise it uses NumPy.
 
 ## Architecture
 
 The application is intentionally monolithic. `SearchConfig` owns validated search parameters and defaults, `generate_primes()` creates the ordered candidate primes, and `build_base_rows()` creates a Boolean matrix where each row represents one prime. `build_shift_table()` transforms that into the precomputed complemented candidates consumed by the search: `shift_table[level][shift]` has shape `(cols,)`, and each level's table has shape `(prime, cols)`.
 
-`State` performs an iterative depth-first search over shift choices. It intersects a parent `zero_mask` with one precomputed row complement to produce `node_mask`, counts active entries, and prunes branches below `max(limit, max_count)`. At leaves, it records paths whose count equals `target`; `max_count`, `results`, and `shifts` are the public result state. The CLI creates the config and table, runs the state, then writes the result file as `max_count`, `results`, and one shift list per line.
+`State` performs an iterative depth-first search over shift choices. It intersects a parent `zero_mask` with one precomputed row complement to produce `node_mask`, counts active entries, and prunes branches below `max_count`. At leaves, it records paths whose count equals `target`; `max_count`, `results`, and `shifts` are the public result state. The CLI creates the config and table, runs the state, then writes the result file as `max_count`, `results`, and one shift list per line.
 
 Checkpointing serializes the entire resumable DFS state to version-2 JSON: settings, `key`, masks, result aggregates, node count, and stack frames. Boolean masks are encoded through `np.packbits` into Python integers so widths above 64 bits round-trip safely. A resumed search rejects checkpoints whose settings do not exactly match the active search.
 

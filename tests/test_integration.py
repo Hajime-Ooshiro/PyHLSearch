@@ -9,11 +9,10 @@ from HLSearch import SearchConfig, State, build_shift_table
 cfg = SearchConfig()
 
 
-def run_state(primes, depth, limit, target, max_depth, cols, output_path):
+def run_state(primes, depth, target, max_depth, cols, output_path):
     config = SearchConfig(
         primes=primes,
         depth=depth,
-        limit=limit,
         target=target,
         max_depth=max_depth,
         cols=cols,
@@ -42,7 +41,7 @@ class TestIntegration:
         primes = cfg.primes[:5]  # [2, 3, 5, 7, 11]
         depth = 4
         cols = 100
-        state = run_state(primes, depth, 0, cols, depth + 2, cols, dummy_file)
+        state = run_state(primes, depth, 25, depth + 2, cols, dummy_file)
 
         assert state.max_count > 0
         assert len(state.shifts) > 0
@@ -57,7 +56,7 @@ class TestIntegration:
 
         quick_depth = 4
         quick_cols = 500
-        state = run_state(cfg.primes, quick_depth, 0, cfg.target, cfg.max_depth, quick_cols, dummy_file)
+        state = run_state(cfg.primes, quick_depth, 116, cfg.max_depth, quick_cols, dummy_file)
 
         assert state.max_count > 0
         assert state.results >= 1
@@ -76,7 +75,6 @@ class TestIntegration:
                 "HLSearch.py",
                 "--depth", "3",
                 "--cols", "50",
-                "--limit", "0",
                 "--output", str(dummy_file),
             ],
         )
@@ -97,7 +95,7 @@ class TestIntegration:
 def test_state_checkpoint_roundtrip(tmp_path):
     """探索途中状態をテキスト checkpoint に保存し、再読込できることを確認"""
     path = tmp_path / "resume_state.txt"
-    config = SearchConfig(primes=[2, 3], depth=2, limit=0, target=10, max_depth=2, cols=8)
+    config = SearchConfig(primes=[2, 3], depth=2, target=10, max_depth=2, cols=8)
     shift_table = build_shift_table([2, 3], 8)
     state = State(config, shift_table, checkpoint_path=path, checkpoint_interval=1)
     state.key = [0, 1]
@@ -122,5 +120,3 @@ def test_state_checkpoint_roundtrip(tmp_path):
     assert restored._stack[0][0] == 0
     assert restored._stack[0][2] == 1
     assert restored.shifts == [[0, 1], [1, 0]]
-
-
