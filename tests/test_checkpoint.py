@@ -22,6 +22,8 @@ with tempfile.TemporaryDirectory() as tmp:
     state.max_count = 7
     state.results = 2
     state.shifts = [[0, 1], [1, 0]]
+    state.target_shifts = [[0, 1]]
+    state.max_shifts = [[1, 0]]
     state.node_count = 42
     state._stack = [
         [0, state.zero_mask.copy(), 1, 2],

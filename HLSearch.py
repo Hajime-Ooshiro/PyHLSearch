@@ -225,6 +225,8 @@ class State:
         "target",
         "max_count",
         "shifts",
+        "target_shifts",
+        "max_shifts",
         "results",
         "start_time",
         "node_count",
@@ -271,6 +273,8 @@ class State:
         )
         self.max_count: int = 0
         self.shifts: list[list[int]] = []
+        self.target_shifts: list[list[int]] = []
+        self.max_shifts: list[list[int]] = []
         self.results: int = 0
         self.start_time: float = time.time()
         self.node_count: int = 0
@@ -319,6 +323,13 @@ class State:
             dtype=np.uint64,
         ).copy()
 
+    def _update_shifts(self) -> None:
+        """target 到達パスと最大値パスを順序を保って重複なく公開する。"""
+        self.shifts = []
+        for path in self.target_shifts + self.max_shifts:
+            if path not in self.shifts:
+                self.shifts.append(path)
+
     def _save_checkpoint(self) -> None:
         if self.checkpoint_path is None:
             return
@@ -344,12 +355,15 @@ class State:
                 "target": self.target,
                 "traversal_order": "descending",
                 "mask_format": "uint64-little-endian",
+                "result_format": "target-and-maximum-paths",
             },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
             "max_count": self.max_count,
             "results": self.results,
             "shifts": self.shifts,
+            "target_shifts": self.target_shifts,
+            "max_shifts": self.max_shifts,
             "node_count": self.node_count,
             "stack": stack_payload,
         }
@@ -390,6 +404,7 @@ class State:
             "target": self.target,
             "traversal_order": "descending",
             "mask_format": "uint64-little-endian",
+            "result_format": "target-and-maximum-paths",
         }
         if saved.get("settings") != expected_settings:
             raise ValueError(
@@ -401,8 +416,10 @@ class State:
         self.zero_mask = self._int_to_mask(int(saved.get("zero_mask", 0)), self.config.cols)
         self.max_count = int(saved.get("max_count", 0))
         self.results = int(saved.get("results", 0))
+        self.target_shifts = list(saved.get("target_shifts", []))
+        self.max_shifts = list(saved.get("max_shifts", []))
+        self._update_shifts()
         self.node_count = int(saved.get("node_count", 0))
-        self.shifts = list(saved.get("shifts", []))
         raw_stack = saved.get("stack", [])
         self._stack = [
             [
@@ -531,13 +548,15 @@ class State:
                         self.pbar.write(message)
                         logger.info(message)  # ログファイルにも残す(pbar.writeだけだと画面にしか出ない)
                         self.results += 1
-                        self.shifts.append(list(key))
+                        self.target_shifts.append(list(key))
 
                     if not (depth == self.max_depth and count > self.target):
                         if count > self.max_count:
                             self.max_count = count
+                            self.max_shifts = [list(key)]
                         elif count == self.max_count:
-                            pass
+                            self.max_shifts.append(list(key))
+                    self._update_shifts()
 
                     key.pop()
                     continue
