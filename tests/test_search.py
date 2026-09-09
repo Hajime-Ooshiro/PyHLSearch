@@ -9,6 +9,7 @@ def test_parse_args_uses_cpu_by_default_and_can_enable_cuda():
     cuda_args = parse_args(["--cuda"])
 
     assert not hasattr(default_args, "limit")
+    assert not hasattr(default_args, "primes_count")
     assert default_args.cuda is False
     assert cuda_args.cuda is True
 
@@ -59,7 +60,7 @@ def test_search_tries_shift_candidates_in_descending_order():
         max_depth=1,
         cols=cols,
     )
-    shift_table = [np.ones((primes[0], cols), dtype=bool)]
+    shift_table = [np.full((primes[0], 1), np.iinfo(np.uint64).max, dtype=np.uint64)]
 
     state = State(config, shift_table)
     state.run()
@@ -91,7 +92,7 @@ def test_state_rejects_inconsistent_shift_table():
     config = SearchConfig(primes=[2], depth=1, cols=8)
 
     with pytest.raises(ValueError, match=r"shift_table\[0\]"):
-        State(config, [np.zeros((1, 8), dtype=bool)])
+        State(config, [np.zeros((1, 1), dtype=np.uint64)])
 
 
 def test_state_rejects_checkpoint_with_different_settings(tmp_path):
@@ -111,6 +112,6 @@ def test_state_rejects_checkpoint_with_different_settings(tmp_path):
 def test_count_nonzero_uses_numpy_by_default():
     config = SearchConfig(primes=[2], depth=1, cols=8)
     state = State(config, build_shift_table([2], 8))
-    mask = np.array([True, False, True, True, False, False, True, False])
+    mask = np.array([0b01001101], dtype=np.uint64)
 
     assert state._count_nonzero(mask) == 4

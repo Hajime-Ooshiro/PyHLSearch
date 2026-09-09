@@ -99,14 +99,14 @@ def test_state_checkpoint_roundtrip(tmp_path):
     shift_table = build_shift_table([2, 3], 8)
     state = State(config, shift_table, checkpoint_path=path, checkpoint_interval=1)
     state.key = [0, 1]
-    state.zero_mask = np.array([True, False, True, False, True, False, True, False], dtype=bool)
+    state.zero_mask = np.array([0b01010101], dtype=np.uint64)
     state.max_count = 7
     state.results = 2
     state.shifts = [[0, 1], [1, 0]]
     state.node_count = 42
     state._stack = [
         [0, state.zero_mask.copy(), 1, 2],
-        [1, np.array([True, True, False, False, True, True, False, False], dtype=bool), 0, 3],
+        [1, np.array([0b00110011], dtype=np.uint64), 0, 3],
     ]
 
     state._save_checkpoint()

@@ -7,7 +7,8 @@
 - 2 から 1579 までの素数を対象に、各階層でのシフト候補を探索する。
 - `search()` は `SearchConfig.primes`（PRIMES）を基準に、各階層のシフト候補を最大値から 0 へ降順で探索する。
 - `State` クラスで反復 DFS を実装し、再帰制限やコールスタックの問題を避ける。
-- 事前計算したシフトテーブルを使って探索を高速化し、必要に応じて枝刈りを行う。
+- シフトテーブルと探索マスクを `uint64` ワードへビットパックし、AND と popcount をワード単位で処理する。
+- 現在の最良値 `max_count` を下回る枝を打ち切る。
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
 - 現在のリポジトリの標準実装は `HLSearch.py` であり、他の変種は過去の実験コードとして `bk/` に保管されている。
 
@@ -21,14 +22,14 @@
 ## 動作環境
 
 - Python 3.10 以上
-- NumPy
+- NumPy 2.0 以上
 - tqdm
 - CUDA 利用時は CuPy と NVIDIA CUDA ドライバ（任意）
 
 ## インストール
 
 ```powershell
-python -m pip install numpy tqdm
+python -m pip install "numpy>=2.0" tqdm
 ```
 
 CUDA を利用する場合は、環境に合った CuPy パッケージもインストールしてください。
@@ -37,7 +38,13 @@ CUDA を利用する場合は、環境に合った CuPy パッケージもイン
 python -m pip install cupy-cuda12x
 ```
 
-既定では NumPy による CPU popcount を使用します。CUDA デバイスと CuPy が利用可能な環境で CUDA popcount を試す場合は、`--cuda` を指定してください。CUDA を利用できない場合は NumPy にフォールバックします。
+既定では NumPy の CPU popcount を使用します。CUDA デバイスと CuPy が利用可能な環境で CUDA popcount を試す場合は、`--cuda` を指定してください。CUDA を利用できない場合は NumPy にフォールバックします。
+
+## パフォーマンス
+
+探索用のシフトテーブルとマスクは `uint64` にビットパックされます。列数を `cols` とすると、各マスクの長さは `ceil(cols / 64)` ワードとなり、Boolean 配列と比べてメモリ使用量をおおむね 1/8 に削減します。
+
+`--cuda` は popcount のみを GPU で実行します。マスク転送と同期のコストにより、一般的な設定では CPU の方が高速になる場合があります。実行環境と探索規模で計測して使い分けてください。
 
 ## 基本的な実行方法
 
@@ -60,15 +67,19 @@ python HLSearch.py --depth 8 --max-depth 249 --target 447 --resume resume.json
 
 - `--checkpoint`: 途中経過を JSON 形式で保存する
 - `--resume`: 保存済み checkpoint から探索を再開する
-- 旧形式の `key=value` checkpoint と、昇順探索時に作成した JSON checkpoint は読み込まないため、現在の設定で新規に保存したファイルを使うこと
+- 旧形式の `key=value` checkpoint、昇順探索時に作成した JSON checkpoint、ビットパック化前に保存した JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
 
 ## 代表的なオプション
 
 - `-d, --depth`: 探索する深さ
+- `--max-depth`: `target` による上限打ち切りを適用する深さ
 - `-t, --target`: 最大深さでの目標値
 - `--cols`: 列数
 - `--cuda`: CuPy/CUDA による popcount を有効化
 - `--output`: 結果出力先ファイル
+- `--mininterval`: 進捗表示の最短更新間隔（秒）
+- `--log-level`: コンソールログレベル
+- `--checkpoint`: 定期保存する checkpoint ファイル
 - `--resume`: checkpoint から再開
 
 ```powershell
@@ -79,6 +90,7 @@ python HLSearch.py --depth 4 --cols 500 --output shift_path.txt
 
 ```powershell
 pytest -q
+```
 
 詳細な実装方針、デバッグ方法、チェックポイント設計については `.github/copilot-instructions.md` を参照してください。
 

@@ -29,7 +29,7 @@ There is no configured linter or build step. The project requires Python 3.10+, 
 
 ## Architecture
 
-The application is intentionally monolithic. `SearchConfig` owns validated search parameters and defaults, `generate_primes()` creates the ordered candidate primes, and `build_base_rows()` creates a Boolean matrix where each row represents one prime. `build_shift_table()` transforms that into the precomputed complemented candidates consumed by the search: `shift_table[level][shift]` has shape `(cols,)`, and each level's table has shape `(prime, cols)`.
+The application is intentionally monolithic. `SearchConfig` owns validated search parameters and defaults, `generate_primes()` creates the ordered candidate primes, and `build_base_rows()` creates a Boolean matrix where each row represents one prime. `build_shift_table()` packs the precomputed complemented candidates into `uint64` words consumed by the search: `shift_table[level][shift]` has shape `(ceil(cols / 64),)`, and each level's table has shape `(prime, ceil(cols / 64))`.
 
 `State` performs an iterative depth-first search over shift choices. It intersects a parent `zero_mask` with one precomputed row complement to produce `node_mask`, counts active entries, and prunes branches below `max_count`. At leaves, it records paths whose count equals `target`; `max_count`, `results`, and `shifts` are the public result state. The CLI creates the config and table, runs the state, then writes the result file as `max_count`, `results`, and one shift list per line.
 
@@ -38,7 +38,7 @@ Checkpointing serializes the entire resumable DFS state to version-2 JSON: setti
 ## Repository Conventions
 
 - Keep the public module surface in `HLSearch.py`: `SearchConfig`, `State`, `generate_primes`, `build_base_rows`, `build_shift_table`, `shift_array`, `setup_logging`, and `parse_args`. Add validation for configuration or table-shape contracts at construction time, following the existing `ValueError` messages.
-- Preserve Boolean NumPy masks throughout the NumPy implementation. `build_shift_table()` stores complements up front, so the hot search loop must use `base_mask & shift_table[level][i]` rather than recomputing shifts or complements.
+- Preserve packed `uint64` NumPy masks throughout the search implementation. `build_shift_table()` stores complements up front, so the hot search loop must use `base_mask & shift_table[level][i]` rather than recomputing shifts or complements.
 - The DFS stack uses mutable frames in the exact form `[level, base_mask, next_idx, next_p]`. `key` and `_stack` must remain synchronized: while an active branch is represented, `len(key) == len(_stack) - 1`. Save a checkpoint only after resolving the current branch and restoring or extending this relationship.
 - Keep checkpoint files atomic: write the JSON to `<checkpoint>.tmp`, then replace the target. Maintain version `2` and its exact `settings` compatibility check when changing the saved state.
 - `State.run()` always closes its tqdm progress bar and writes a final checkpoint when configured. Preserve that cleanup behavior when adjusting search control flow.

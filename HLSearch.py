@@ -30,6 +30,8 @@ import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm
 
+WORD_BITS = 64
+
 
 def generate_primes(limit: int) -> list[int]:
     """limit 以下の素数を昇順で返す。
@@ -126,13 +128,6 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -
     return log_path
 
 
-# COLS: int = cfg.cols
-# DEPTH: int = cfg.depth
-# MAX_DEPTH: int = cfg.max_depth
-# TARGET: int = cfg.target
-# PROGRESS_MININTERVAL: float = cfg.progress_mininterval  # tqdm進捗表示の最短更新間隔(秒)
-# POSTFIX_UPDATE_INTERVAL: int = cfg.postfix_update_interval
-
 # 2,3,5,7,11,13,...,1579 の素数リスト
 PRIMES: list[int] = generate_primes(1579)
 
@@ -169,7 +164,22 @@ def build_base_rows(primes: Sequence[int], cols: int = cfg.cols) -> NDArray[np.b
     return np.array([(idx % p == 1) for p in primes])
 
 
-def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArray[np.bool_]]:
+def _pack_masks(masks: NDArray[np.bool_]) -> NDArray[np.uint64]:
+    """bool マスクを列方向に uint64 ワードへパックする。"""
+    packed_bytes = np.packbits(masks, axis=-1, bitorder="little")
+    padding = (-packed_bytes.shape[-1]) % (WORD_BITS // 8)
+    if padding:
+        pad_width = [(0, 0)] * packed_bytes.ndim
+        pad_width[-1] = (0, padding)
+        packed_bytes = np.pad(packed_bytes, pad_width)
+    return np.ascontiguousarray(packed_bytes).view(np.uint64)
+
+
+def _packed_width(cols: int) -> int:
+    return (cols + WORD_BITS - 1) // WORD_BITS
+
+
+def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArray[np.uint64]]:
     """各レベルごとのシフト候補テーブルを事前生成する。
 
     これにより探索時に毎回 `shift_array()` と `~` 演算を行わず、
@@ -181,16 +191,16 @@ def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArr
 
     Returns:
         `shift_table[level][shift]` が、level 段目におけるシフト値 `shift`
-        に対応する補集合行を表す bool 配列。
+        に対応する補集合行を表す uint64 パック配列。
     """
     base_rows = build_base_rows(primes, cols)
-    shift_table: list[NDArray[np.bool_]] = []
+    shift_table: list[NDArray[np.uint64]] = []
     for level, p in enumerate(primes):
         row = base_rows[level]
         shifted_complement = np.empty((p, cols), dtype=bool)
         for k in range(p):
             shifted_complement[k] = ~shift_array(row, k)
-        shift_table.append(shifted_complement)
+        shift_table.append(_pack_masks(shifted_complement))
     return shift_table
 
 class State:
@@ -225,7 +235,7 @@ class State:
         "_cuda",
     )
 
-    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.bool_]], max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False) -> None:
+    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.uint64]], max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False) -> None:
         # SearchConfig 以外(生の primes 列)が渡された場合は、まず SearchConfig に
         # 正規化してしまう。これにより以降の属性代入を両ケースで共通化でき、
         # max_depth/target の決定ロジックを二重に書かずに済む。
@@ -243,19 +253,22 @@ class State:
             raise ValueError(
                 f"shift_table の階層数({len(shift_table)})が depth({config.depth})未満です"
             )
+        packed_width = _packed_width(config.cols)
         for level, (prime, table) in enumerate(zip(primes[:config.depth], shift_table)):
-            if table.ndim != 2 or table.shape != (prime, config.cols):
+            if table.dtype != np.uint64 or table.ndim != 2 or table.shape != (prime, packed_width):
                 raise ValueError(
                     f"shift_table[{level}] の形状が不正です: "
-                    f"期待値=({prime}, {config.cols}), 実際={table.shape}"
+                    f"期待値=({prime}, {packed_width}), 実際={table.shape}"
                 )
         self.max_depth = config.max_depth if max_depth is None else max_depth
         self.target = config.target if target is None else target
 
         self.key: list[int] = []
         self.primes: Sequence[int] = primes
-        self.shift_table: list[NDArray[np.bool_]] = shift_table
-        self.zero_mask: NDArray[np.bool_] = np.ones(self.config.cols, dtype=bool)
+        self.shift_table: list[NDArray[np.uint64]] = shift_table
+        self.zero_mask: NDArray[np.uint64] = _pack_masks(
+            np.ones(self.config.cols, dtype=bool)
+        )
         self.max_count: int = 0
         self.shifts: list[list[int]] = []
         self.results: int = 0
@@ -288,32 +301,23 @@ class State:
         logger.info("CUDA backend を使用します: %s", cp.cuda.runtime.runtimeGetVersion())
         return cp
 
-    def _count_nonzero(self, mask: NDArray[np.bool_]) -> int:
+    def _count_nonzero(self, mask: NDArray[np.uint64]) -> int:
         if self._cuda is None:
-            return int(np.count_nonzero(mask))
-        return int(self._cuda.count_nonzero(self._cuda.asarray(mask)).get())
+            return int(np.bitwise_count(mask).sum())
+        device_mask = self._cuda.asarray(mask).view(self._cuda.uint8)
+        return int(self._cuda.unpackbits(device_mask).sum().get())
 
-    def _mask_to_int(self, mask: NDArray[np.bool_]) -> int:
-        """bool配列をビット列とみなして多倍長整数に変換する。
+    def _mask_to_int(self, mask: NDArray[np.uint64]) -> int:
+        """uint64 パックマスクを多倍長整数に変換する。"""
+        return int.from_bytes(mask.tobytes(), byteorder="little")
 
-        以前は `1 << np.arange(mask.size, dtype=np.int64)` で重み配列を作り
-        `np.dot` していたが、mask.size が64を超えると int64 の範囲を超えて
-        符号オーバーフローし、チェックポイントの内容が壊れるバグがあった。
-        `np.packbits` でバイト列化してから Python の多倍長整数に変換すれば
-        サイズに関わらず正しく、かつベクトル化されて高速。
-        """
-        if mask.size == 0:
-            return 0
-        packed = np.packbits(np.asarray(mask, dtype=bool))
-        return int.from_bytes(packed.tobytes(), byteorder="big")
-
-    def _int_to_mask(self, value: int, size: int) -> NDArray[np.bool_]:
+    def _int_to_mask(self, value: int, size: int) -> NDArray[np.uint64]:
         """`_mask_to_int` の逆変換。"""
-        if size == 0:
-            return np.zeros(0, dtype=bool)
-        nbytes = (size + 7) // 8
-        packed = np.frombuffer(value.to_bytes(nbytes, byteorder="big"), dtype=np.uint8)
-        return np.unpackbits(packed)[:size].astype(bool)
+        word_count = _packed_width(size)
+        return np.frombuffer(
+            value.to_bytes(word_count * (WORD_BITS // 8), byteorder="little"),
+            dtype=np.uint64,
+        ).copy()
 
     def _save_checkpoint(self) -> None:
         if self.checkpoint_path is None:
@@ -339,6 +343,7 @@ class State:
                 "max_depth": self.max_depth,
                 "target": self.target,
                 "traversal_order": "descending",
+                "mask_format": "uint64-little-endian",
             },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
@@ -384,6 +389,7 @@ class State:
             "max_depth": self.max_depth,
             "target": self.target,
             "traversal_order": "descending",
+            "mask_format": "uint64-little-endian",
         }
         if saved.get("settings") != expected_settings:
             raise ValueError(
@@ -515,8 +521,7 @@ class State:
                 node_mask = base_mask & row_complement
                 count = self._count_nonzero(node_mask)
 
-                remains = depth - level                 
-                if count + remains <= self.max_count:
+                if count < self.max_count:
                     key.pop()
                     continue
 
@@ -582,8 +587,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="depthがこの値と一致するとき、--targetによる追加打ち切りを有効にする。")
     parser.add_argument("-t", "--target", type=int, default=cfg.target,
                         help="depth == max-depth のとき、countがこの値を超えたら結果を採用せず打ち切る。")
-    parser.add_argument("-p", "--primes-count", type=int, default=None, metavar="N",
-                        help="PRIMESの先頭N個だけを使う(未指定なら全て使用)。")
     parser.add_argument("--cols", type=int, default=cfg.cols,
                         help="列数(=探索対象の長さ)。")
     parser.add_argument("--cuda", action="store_true",
@@ -613,7 +616,7 @@ if __name__ == "__main__":
     max_depth = args.max_depth
     target = args.target
     cols = args.cols
-    primes = PRIMES if args.primes_count is None else PRIMES[: args.primes_count]
+    primes = PRIMES
     output_path = args.output
 
     if depth > len(primes):
@@ -632,7 +635,7 @@ if __name__ == "__main__":
 
     logger.info("HLSearch 開始 (log file: %s)", LOG_PATH)
     logger.info(
-        "設定: depth=%d max_depth=%d target=%d primes_count=%d cuda=%s",
+        "設定: depth=%d max_depth=%d target=%d primes=%d cuda=%s",
         depth,
         max_depth,
         target,
