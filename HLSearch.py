@@ -1,14 +1,14 @@
 """HLSearch: 素数シフト探索プログラム。
 
-このモジュールは、ハーディ・リトルウッドの第2予想に関する探索問題を
-NumPy ベースの bitmask/shift table で高速化するための実装を提供する。
+このモジュールは、ハーディ・リトルウッド第 2 予想に関連する探索問題を
+NumPy ベースの bitmask/shift table で高速化する実装を提供する。
 
 公開 API:
-- generate_primes(limit): 指定上限までの素数を生成する
+- generate_primes(limit): 指定上限までの素数を昇順で返す
 - SearchConfig: 探索設定をまとめた dataclass
-- build_base_rows(primes): 素数ごとの基底行を生成する
-- build_shift_table(primes): シフト候補テーブルを生成する
-- State: 探索を実行する状態管理クラス
+- build_base_rows(primes, cols): 各素数ごとの基底行を構築する
+- build_shift_table(primes, cols): シフト候補の packed table を生成する
+- State: DFS 探索の状態と結果を管理するクラス
 - parse_args(argv): CLI 引数を解析する
 
 利用者はこのモジュールを直接 import して `State` を使うか、
@@ -39,7 +39,7 @@ def generate_primes(limit: int) -> list[int]:
     """limit 以下の素数を昇順で返す。
 
     Args:
-        limit: 上限値。2 以上を指定する。
+        limit: 上限値。`MIN_PRIME` 以上を指定する。
 
     Returns:
         limit 以下の素数を昇順に並べたリスト。
@@ -60,13 +60,13 @@ class SearchConfig:
     """探索処理に必要な設定をまとめた構成体。
 
     Attributes:
-        primes: 探索対象の素数リスト。デフォルトでは 1579 以下の素数を生成する。
-        depth: 深さとして使う素数の数。
+        primes: 探索対象の素数リスト。既定では `MAX_PRIME` 以下の素数を生成する。
+        depth: 使用する素数の深さ。
         cols: 列数。
         progress_mininterval: tqdm の最短更新間隔。
-        postfix_update_interval: postfix 更新の頻度。
-        shift_path_file: 出力ファイルパス。未指定(空文字)の場合は
-            "shift_path_depth{depth}.txt" が自動的に使われる。
+        postfix_update_interval: `set_postfix()` を更新する頻度。
+        shift_path_file: 出力ファイルパス。未指定時は
+            "shift_path_depth{depth}.txt" が使われる。
     """
     primes: list[int] = field(default_factory=lambda: generate_primes(MAX_PRIME))
     depth: int = 8
@@ -180,7 +180,7 @@ def build_base_rows(primes: Sequence[int], cols: int = cfg.cols) -> NDArray[np.b
 
 
 def _pack_masks(masks: NDArray[np.bool_]) -> NDArray[np.uint64]:
-    """bool マスクを列方向に uint64 ワードへパックする。"""
+    """Boolean マスクを列方向に `uint64` ワードへパックする。"""
     packed_bytes = np.packbits(masks, axis=-1, bitorder="little")
     padding = (-packed_bytes.shape[-1]) % (WORD_BITS // 8)
     if padding:
@@ -197,16 +197,16 @@ def _packed_width(cols: int) -> int:
 def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArray[np.uint64]]:
     """各レベルごとのシフト候補テーブルを事前生成する。
 
-    これにより探索時に毎回 `shift_array()` と `~` 演算を行わず、
-    事前に補集合を計算済みの配列をそのまま使える。
+    このテーブルには補集合があらかじめ格納されており、探索時には
+    そのまま `base_mask & shift_table[level][i]` を計算できる。
 
     Args:
         primes: 使用する素数のリスト。
         cols: 列数。
 
     Returns:
-        `shift_table[level][shift]` が、level 段目におけるシフト値 `shift`
-        に対応する補集合行を表す uint64 パック配列。
+        `shift_table[level][shift]` が、level 段目での `shift` に対応する
+        補集合マスクを表す `uint64` packed 配列。
     """
     base_rows = build_base_rows(primes, cols)
     shift_table: list[NDArray[np.uint64]] = []
@@ -322,7 +322,7 @@ class State:
         return int.from_bytes(mask.tobytes(), byteorder="little")
 
     def _int_to_mask(self, value: int, size: int) -> NDArray[np.uint64]:
-        """`_mask_to_int` の逆変換。"""
+        """`_mask_to_int` の逆変換を行う。"""
         word_count = _packed_width(size)
         return np.frombuffer(
             value.to_bytes(word_count * (WORD_BITS // 8), byteorder="little"),
@@ -563,7 +563,15 @@ class State:
                 self.report_progress()
 
     def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
-        """primes[:depth] を使って深さ depth までの探索を実行するエントリポイント"""
+        """`primes[:depth]` を使って深さ `depth` まで探索を実行する。
+
+        Args:
+            depth: 探索する深さ。None の場合は `config.depth` を使う。
+            resume_from: 再開用 checkpoint のパス。
+
+        Returns:
+            更新後の `State` 自身。
+        """
         if depth is not None and depth < 0:
             raise ValueError(f"depth は0以上である必要があります: depth={depth}")
         depth_to_use = self.config.depth if depth is None else depth
@@ -589,7 +597,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         argv: 引数リスト。None の場合は `sys.argv[1:]` を使う。
 
     Returns:
-        argparse.Namespace 形式の設定。
+        解析済みの `argparse.Namespace`。
     """
     parser = argparse.ArgumentParser(
         description="HLSearch: 素数シフト探索プログラム",
