@@ -58,8 +58,6 @@ def test_search_uses_prime_ranges_as_shift_candidates():
     config = SearchConfig(
         primes=primes,
         depth=2,
-        target=2,
-        max_depth=2,
         cols=cols,
     )
 
@@ -79,8 +77,6 @@ def test_search_tries_shift_candidates_in_descending_order():
     config = SearchConfig(
         primes=primes,
         depth=1,
-        target=cols,
-        max_depth=1,
         cols=cols,
     )
     shift_table = [np.full((primes[0], 1), np.iinfo(np.uint64).max, dtype=np.uint64)]
@@ -91,26 +87,22 @@ def test_search_tries_shift_candidates_in_descending_order():
     assert state.shifts == [[2], [1], [0]]
 
 
-def test_search_keeps_target_and_maximum_paths_without_duplicates():
-    config = SearchConfig(primes=[2], depth=1, target=1, max_depth=3, cols=2)
+def test_search_tracks_maximum_paths_without_duplicates():
+    config = SearchConfig(primes=[2], depth=1, cols=2)
     shift_table = [np.array([[0b11], [0b01]], dtype=np.uint64)]
 
     state = State(config, shift_table)
     state.run()
 
     assert state.results == 1
-    assert state.target_results == 1
-    assert state.target_shifts == [[1]]
     assert state.max_shifts == [[0]]
-    assert state.shifts == [[1], [0]]
+    assert state.shifts == [[0]]
 
 
 def test_search_with_zero_depth_finishes_without_exploring():
     config = SearchConfig(
         primes=[],
         depth=0,
-        target=0,
-        max_depth=0,
         cols=8,
     )
     state = State(config, [])

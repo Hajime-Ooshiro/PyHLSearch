@@ -9,12 +9,10 @@ from HLSearch import SearchConfig, State, build_shift_table
 cfg = SearchConfig()
 
 
-def run_state(primes, depth, target, max_depth, cols, output_path):
+def run_state(primes, depth, cols, output_path):
     config = SearchConfig(
         primes=primes,
         depth=depth,
-        target=target,
-        max_depth=max_depth,
         cols=cols,
         shift_path_file=str(output_path),
     )
@@ -25,7 +23,6 @@ def run_state(primes, depth, target, max_depth, cols, output_path):
     with output_path.open("w", encoding="utf-8") as f:
         f.write(f"max_count:{state.max_count}\n")
         f.write(f"results:{state.results}\n")
-        f.write(f"target_results:{state.target_results}\n")
         for path in state.shifts:
             f.write(f"{path}\n")
     return state
@@ -42,7 +39,7 @@ class TestIntegration:
         primes = cfg.primes[:5]  # [2, 3, 5, 7, 11]
         depth = 4
         cols = 100
-        state = run_state(primes, depth, 25, depth + 2, cols, dummy_file)
+        state = run_state(primes, depth, cols, dummy_file)
 
         assert state.max_count > 0
         assert len(state.shifts) > 0
@@ -57,7 +54,7 @@ class TestIntegration:
 
         quick_depth = 4
         quick_cols = 500
-        state = run_state(cfg.primes, quick_depth, 116, cfg.max_depth, quick_cols, dummy_file)
+        state = run_state(cfg.primes, quick_depth, quick_cols, dummy_file)
 
         assert state.max_count > 0
         assert state.results >= 1
@@ -96,16 +93,14 @@ class TestIntegration:
 def test_state_checkpoint_roundtrip(tmp_path):
     """探索途中状態をテキスト checkpoint に保存し、再読込できることを確認"""
     path = tmp_path / "resume_state.txt"
-    config = SearchConfig(primes=[2, 3], depth=2, target=10, max_depth=2, cols=8)
+    config = SearchConfig(primes=[2, 3], depth=2, cols=8)
     shift_table = build_shift_table([2, 3], 8)
     state = State(config, shift_table, checkpoint_path=path, checkpoint_interval=1)
     state.key = [0, 1]
     state.zero_mask = np.array([0b01010101], dtype=np.uint64)
     state.max_count = 7
     state.results = 2
-    state.target_results = 1
     state.shifts = [[0, 1], [1, 0]]
-    state.target_shifts = [[0, 1]]
     state.max_shifts = [[1, 0]]
     state.node_count = 42
     state._stack = [
@@ -120,7 +115,6 @@ def test_state_checkpoint_roundtrip(tmp_path):
     assert restored.key == [0, 1]
     assert restored.max_count == 7
     assert restored.results == 2
-    assert restored.target_results == 1
     assert restored.node_count == 42
     assert restored._stack[0][0] == 0
     assert restored._stack[0][2] == 1

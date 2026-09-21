@@ -9,7 +9,7 @@
 - `State` クラスで反復 DFS を実装し、再帰制限やコールスタックの問題を避ける。
 - シフトテーブルと探索マスクを `uint64` ワードへビットパックし、AND と popcount をワード単位で処理する。
 - 現在の最良値 `max_count` を下回る枝を打ち切る。
-- `results` は最終最大値を持つパス数、`target_results` は `target` 到達件数、`shifts` は両パス群の重複なし和集合を保持する。
+- `results` は最終最大値を持つパス数、`shifts` は最終最大値パスの集合を保持する。
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
 - 現在のリポジトリの標準実装は `HLSearch.py` であり、他の変種は過去の実験コードとして `bk/` に保管されている。
 
@@ -50,7 +50,7 @@ python -m pip install cupy-cuda12x
 ## 基本的な実行方法
 
 ```powershell
-python HLSearch.py --depth 8 --max-depth 249 --target 447
+python HLSearch.py --depth 8
 ```
 
 ### 小規模テスト
@@ -62,13 +62,13 @@ python HLSearch.py --depth 3 --cols 50 --output shift_path.txt
 ### 中断・再開
 
 ```powershell
-python HLSearch.py --depth 8 --max-depth 249 --target 447 --checkpoint resume.json
-python HLSearch.py --depth 8 --max-depth 249 --target 447 --resume resume.json
+python HLSearch.py --depth 8 --checkpoint resume.json
+python HLSearch.py --depth 8 --resume resume.json
 ```
 
 - `--checkpoint`: 途中経過を JSON 形式で保存する
-- `--resume`: 保存済み checkpoint から探索を再開する
-- 旧形式の `key=value` checkpoint、昇順探索時に作成した JSON checkpoint、ビットパック化前または `target_results` 導入前に保存した JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
+- `--resume`: 保存済み checkpoint から再開する
+- checkpoint の形式バージョンは `version: 4` のみをサポートする。古い `key=value` 形式や、ビットパック化前の JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
 
 ## 結果出力
 
@@ -77,17 +77,14 @@ python HLSearch.py --depth 8 --max-depth 249 --target 447 --resume resume.json
 ```text
 max_count:<最終最大値>
 results:<最終最大値パス数>
-target_results:<target 到達件数>
 [<shift 0>, <shift 1>, ...]
 ```
 
-シフトパスは `target` 到達パスと最終最大値パスの重複なし和集合です。
+シフトパスは最終最大値パスの集合です。
 
 ## 代表的なオプション
 
 - `-d, --depth`: 探索する深さ
-- `--max-depth`: `target` による上限打ち切りを適用する深さ
-- `-t, --target`: 最大深さでの目標値
 - `--cols`: 列数
 - `--cuda`: CuPy/CUDA による popcount を有効化
 - `--output`: 結果出力先ファイル

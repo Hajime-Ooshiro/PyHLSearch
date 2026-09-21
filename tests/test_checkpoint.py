@@ -9,7 +9,7 @@ sys.path.insert(0, '.')
 import HLSearch as hl
 import numpy as np
 
-config = hl.SearchConfig(primes=[2,3], depth=2, target=10, max_depth=2, cols=8)
+config = hl.SearchConfig(primes=[2,3], depth=2, cols=8)
 shift_table = hl.build_shift_table([2,3], 8)
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -21,9 +21,7 @@ with tempfile.TemporaryDirectory() as tmp:
     state.zero_mask = np.array([0b01010101], dtype=np.uint64)
     state.max_count = 7
     state.results = 2
-    state.target_results = 1
     state.shifts = [[0, 1], [1, 0]]
-    state.target_shifts = [[0, 1]]
     state.max_shifts = [[1, 0]]
     state.node_count = 42
     state._stack = [

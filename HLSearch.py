@@ -31,6 +31,8 @@ from numpy.typing import NDArray
 from tqdm import tqdm
 
 WORD_BITS = 64
+MIN_PRIME = 2
+MAX_PRIME = 1579
 
 
 def generate_primes(limit: int) -> list[int]:
@@ -42,15 +44,15 @@ def generate_primes(limit: int) -> list[int]:
     Returns:
         limit 以下の素数を昇順に並べたリスト。
     """
-    if limit < 2:
+    if limit < MIN_PRIME:
         return []
     sieve = bytearray(b"\x01") * (limit + 1)
-    sieve[0:2] = b"\x00\x00"
-    for p in range(2, int(limit**0.5) + 1):
+    sieve[0:MIN_PRIME] = b"\x00" * MIN_PRIME
+    for p in range(MIN_PRIME, int(limit**0.5) + 1):
         if sieve[p]:
             start = p * p
             sieve[start:limit + 1:p] = b"\x00" * (((limit - start) // p) + 1)
-    return [n for n in range(2, limit + 1) if sieve[n]]
+    return [n for n in range(MIN_PRIME, limit + 1) if sieve[n]]
 
 
 @dataclass(frozen=True)
@@ -60,24 +62,30 @@ class SearchConfig:
     Attributes:
         primes: 探索対象の素数リスト。デフォルトでは 1579 以下の素数を生成する。
         depth: 深さとして使う素数の数。
-        max_depth: 深さの上限。
-        target: `depth == max_depth` のときの打ち切り目標値.
         cols: 列数。
         progress_mininterval: tqdm の最短更新間隔。
         postfix_update_interval: postfix 更新の頻度。
-        shift_path_file: 出力ファイルパス.
+        shift_path_file: 出力ファイルパス。未指定(空文字)の場合は
+            "shift_path_depth{depth}.txt" が自動的に使われる。
     """
-    primes: list[int] = field(default_factory=lambda: generate_primes(1579))
+    primes: list[int] = field(default_factory=lambda: generate_primes(MAX_PRIME))
     depth: int = 8
-    max_depth: int = 249
-    target: int = 447
     cols: int = 3159
     progress_mininterval: float = 1.0
     postfix_update_interval: int = 10000
-    shift_path_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shift_path.txt")
+    shift_path_file: str = ""
 
     def __post_init__(self) -> None:
         """設定値の整合性を早期に検証する(実行時ではなく構築時に失敗させる)。"""
+        if not self.shift_path_file:
+            object.__setattr__(
+                self,
+                "shift_path_file",
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    f"shift_path_depth{self.depth}.txt",
+                ),
+            )
         if self.cols <= 0:
             raise ValueError(f"cols は正の整数である必要があります: cols={self.cols}")
         if self.depth < 0:
@@ -97,6 +105,13 @@ shift_path_file: str = cfg.shift_path_file
 
 # --- logging設定 ---
 logger = logging.getLogger(__name__)
+
+# Checkpoint serialization contract:
+# - version 4 is the only supported on-disk format.
+# - Legacy checkpoint formats (key=value, pre-packed masks, older result layouts)
+#   are intentionally rejected because they do not round-trip the current state.
+CHECKPOINT_VERSION = 4
+
 
 def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -> str:
     """コンソールとファイルの両方にログを出力するよう設定する。"""
@@ -129,7 +144,7 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -
 
 
 # 2,3,5,7,11,13,...,1579 の素数リスト
-PRIMES: list[int] = generate_primes(1579)
+PRIMES: list[int] = generate_primes(MAX_PRIME)
 
 def shift_array(arr: NDArray[np.bool_], k: int) -> NDArray[np.bool_]:
     """
@@ -221,13 +236,9 @@ class State:
         "primes",
         "shift_table",
         "zero_mask",
-        "max_depth",
-        "target",
         "max_count",
         "shifts",
-        "target_shifts",
         "max_shifts",
-        "target_results",
         "results",
         "start_time",
         "node_count",
@@ -238,16 +249,13 @@ class State:
         "_cuda",
     )
 
-    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.uint64]], max_depth: int | None = None, target: int | None = None, checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False) -> None:
+    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.uint64]], checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False) -> None:
         # SearchConfig 以外(生の primes 列)が渡された場合は、まず SearchConfig に
-        # 正規化してしまう。これにより以降の属性代入を両ケースで共通化でき、
-        # max_depth/target の決定ロジックを二重に書かずに済む。
+        # 正規化してしまう。これにより以降の属性代入を両ケースで共通化できる。
         if not isinstance(config, SearchConfig):
             config = SearchConfig(
                 primes=config,
                 depth=len(config),
-                max_depth=cfg.max_depth if max_depth is None else max_depth,
-                target=cfg.target if target is None else target,
                 cols=cfg.cols,
             )
         self.config = config
@@ -263,8 +271,6 @@ class State:
                     f"shift_table[{level}] の形状が不正です: "
                     f"期待値=({prime}, {packed_width}), 実際={table.shape}"
                 )
-        self.max_depth = config.max_depth if max_depth is None else max_depth
-        self.target = config.target if target is None else target
 
         self.key: list[int] = []
         self.primes: Sequence[int] = primes
@@ -274,9 +280,7 @@ class State:
         )
         self.max_count: int = 0
         self.shifts: list[list[int]] = []
-        self.target_shifts: list[list[int]] = []
         self.max_shifts: list[list[int]] = []
-        self.target_results: int = 0
         self.results: int = 0
         self.start_time: float = time.time()
         self.node_count: int = 0
@@ -326,11 +330,8 @@ class State:
         ).copy()
 
     def _update_shifts(self) -> None:
-        """target 到達パスと最大値パスを順序を保って重複なく公開する。"""
-        self.shifts = []
-        for path in self.target_shifts + self.max_shifts:
-            if path not in self.shifts:
-                self.shifts.append(path)
+        """最大値パスを公開用の `shifts` に反映する。"""
+        self.shifts = list(self.max_shifts)
 
     def _save_checkpoint(self) -> None:
         if self.checkpoint_path is None:
@@ -348,24 +349,20 @@ class State:
             })
 
         saved = {
-            "version": 2,
+            "version": CHECKPOINT_VERSION,
             "settings": {
                 "primes": list(self.primes),
                 "depth": self.config.depth,
                 "cols": self.config.cols,
-                "max_depth": self.max_depth,
-                "target": self.target,
                 "traversal_order": "descending",
                 "mask_format": "uint64-little-endian",
-                "result_format": "target-and-maximum-path-counts",
+                "result_format": "maximum-path-counts",
             },
             "key": list(self.key),
             "zero_mask": self._mask_to_int(self.zero_mask),
             "max_count": self.max_count,
             "results": self.results,
-            "target_results": self.target_results,
             "shifts": self.shifts,
-            "target_shifts": self.target_shifts,
             "max_shifts": self.max_shifts,
             "node_count": self.node_count,
             "stack": stack_payload,
@@ -397,17 +394,18 @@ class State:
                 "新しい設定で最初から探索をやり直してください。"
             ) from exc
 
-        if saved.get("version") != 2:
-            raise ValueError(f"unsupported checkpoint version: {saved.get('version')}")
+        if saved.get("version") != CHECKPOINT_VERSION:
+            raise ValueError(
+                f"unsupported checkpoint version: {saved.get('version')} "
+                f"(supported version: {CHECKPOINT_VERSION})"
+            )
         expected_settings = {
             "primes": list(self.primes),
             "depth": self.config.depth,
             "cols": self.config.cols,
-            "max_depth": self.max_depth,
-            "target": self.target,
             "traversal_order": "descending",
             "mask_format": "uint64-little-endian",
-            "result_format": "target-and-maximum-path-counts",
+            "result_format": "maximum-path-counts",
         }
         if saved.get("settings") != expected_settings:
             raise ValueError(
@@ -419,10 +417,8 @@ class State:
         self.zero_mask = self._int_to_mask(int(saved.get("zero_mask", 0)), self.config.cols)
         self.max_count = int(saved.get("max_count", 0))
         self.results = int(saved.get("results", 0))
-        self.target_results = int(saved.get("target_results", 0))
-        self.target_shifts = list(saved.get("target_shifts", []))
         self.max_shifts = list(saved.get("max_shifts", []))
-        self._update_shifts()
+        self.shifts = list(saved.get("shifts", self.max_shifts))
         self.node_count = int(saved.get("node_count", 0))
         raw_stack = saved.get("stack", [])
         self._stack = [
@@ -448,7 +444,7 @@ class State:
             self.pbar.update(self.config.postfix_update_interval)
             self.pbar.set_postfix(
                 best=self.max_count,
-                hits=self.target_results,
+                results=self.results,
                 depth=len(self.key),
                 key=list(self.key),
                 refresh=force,
@@ -547,21 +543,14 @@ class State:
                     continue
 
                 if level + 1 >= depth:
-                    if count == self.target:
-                        message = f"target depth={depth} key={list(key)} count={count}"
-                        self.pbar.write(message)
-                        logger.info(message)  # ログファイルにも残す(pbar.writeだけだと画面にしか出ない)
-                        self.target_results += 1
-                        self.target_shifts.append(list(key))
-
-                    if not (depth == self.max_depth and count > self.target):
-                        if count > self.max_count:
-                            self.max_count = count
-                            self.results = 1
-                            self.max_shifts = [list(key)]
-                        elif count == self.max_count:
-                            self.results += 1
-                            self.max_shifts.append(list(key))
+                    if count > self.max_count:
+                        self.max_count = count
+                        logger.info(f"depth:{depth} key:{list(key)} count:{count}")
+                        self.results = 1
+                        self.max_shifts = [list(key)]
+                    elif count == self.max_count:
+                        self.results += 1
+                        self.max_shifts.append(list(key))
                     self._update_shifts()
 
                     key.pop()
@@ -608,16 +597,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("-d", "--depth", type=int, default=cfg.depth,
                         help="探索する階層数(使用する素数の個数)。primesの長さ以下である必要がある。")
-    parser.add_argument("--max-depth", type=int, default=cfg.max_depth,
-                        help="depthがこの値と一致するとき、--targetによる追加打ち切りを有効にする。")
-    parser.add_argument("-t", "--target", type=int, default=cfg.target,
-                        help="depth == max-depth のとき、countがこの値を超えたら結果を採用せず打ち切る。")
     parser.add_argument("--cols", type=int, default=cfg.cols,
                         help="列数(=探索対象の長さ)。")
     parser.add_argument("--cuda", action="store_true",
                         help="CuPy/CUDA を popcount に使用する(既定では CPU を使用)。")
-    parser.add_argument("--output", type=str, default=shift_path_file,
-                        help="最適シフトパスの出力先ファイル。")
+    parser.add_argument("--output", type=str, default=None,
+                        help="最適シフトパスの出力先ファイル(未指定時は shift_path_depth<depth>.txt)。")
     parser.add_argument("--mininterval", type=float, default=cfg.progress_mininterval,
                         help="tqdm進捗表示の最短更新間隔(秒)。")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO",
@@ -638,11 +623,9 @@ if __name__ == "__main__":
     LOG_PATH = setup_logging(base, console_level=args.log_level)
 
     depth = args.depth
-    max_depth = args.max_depth
-    target = args.target
     cols = args.cols
     primes = PRIMES
-    output_path = args.output
+    output_path = args.output or os.path.join(base, f"shift_path_depth{depth}.txt")
 
     if depth > len(primes):
         raise ValueError(f"depth={depth} が使用可能な素数の個数({len(primes)})を超えています")
@@ -650,8 +633,6 @@ if __name__ == "__main__":
     config = SearchConfig(
         primes=primes,
         depth=depth,
-        max_depth=max_depth,
-        target=target,
         cols=cols,
         progress_mininterval=args.mininterval,
         postfix_update_interval=cfg.postfix_update_interval,
@@ -660,10 +641,8 @@ if __name__ == "__main__":
 
     logger.info("HLSearch 開始 (log file: %s)", LOG_PATH)
     logger.info(
-        "設定: depth=%d max_depth=%d target=%d primes=%d cuda=%s",
+        "設定: depth=%d primes=%d cuda=%s",
         depth,
-        max_depth,
-        target,
         len(primes),
         args.cuda,
     )
@@ -680,14 +659,12 @@ if __name__ == "__main__":
 
     logger.info("最大値: %d", result_state.max_count)
     logger.info("最大値パス数: %d", result_state.results)
-    logger.info("target到達件数: %d", result_state.target_results)
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         f.write(f"max_count:{result_state.max_count}\n")
         f.write(f"results:{result_state.results}\n")
-        f.write(f"target_results:{result_state.target_results}\n")
         for shift in result_state.shifts:
             f.write(f"{shift}\n")
 
