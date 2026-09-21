@@ -1,24 +1,23 @@
 # HLSearch
 
-ハーディ・リトルウッドの第2予想に関する探索プログラムです。
+ハーディ・リトルウッド第 2 予想に関連する素数シフト探索プログラムです。
 
 ## 概要
 
-- 2 から 1579 までの素数を対象に、各階層でのシフト候補を探索する。
-- `search()` は `SearchConfig.primes`（PRIMES）を基準に、各階層のシフト候補を最大値から 0 へ降順で探索する。
-- `State` クラスで反復 DFS を実装し、再帰制限やコールスタックの問題を避ける。
-- シフトテーブルと探索マスクを `uint64` ワードへビットパックし、AND と popcount をワード単位で処理する。
-- 現在の最良値 `max_count` を下回る枝を打ち切る。
-- `results` は最終最大値を持つパス数、`shifts` は最終最大値パスの集合を保持する。
-- 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する。
-- 現在のリポジトリの標準実装は `HLSearch.py` であり、他の変種は過去の実験コードとして `bk/` に保管されている。
+- 2 から 1579 までの素数を候補として、各階層ごとのシフトを探索する
+- `State` は反復 DFS を使って再帰制限やコールスタックの問題を避ける
+- シフトテーブルと探索マスクを `uint64` ワードへビットパックし、AND と popcount をワード単位で処理する
+- 各枝で `max_count` 未満の候補を早期に打ち切る
+- `results` は最終最大値を持つパス数、`shifts` はその最大値パスの集合を保持する
+- 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する
+- 標準実装は `HLSearch.py` で、実験的な変種は `bk/` に保管されている
 
 ## リポジトリ構成
 
-- `HLSearch.py`: 現在の標準実装。NumPy ベースの探索エンジン。
-- `tests/`: 統合テスト、チェックポイント再開テストなど。
-- `bk/`: 過去の実験実装や比較用コード。
-- `.github/copilot-instructions.md`: Copilot 向けの開発ガイド。
+- `HLSearch.py`: 標準実装
+- `tests/`: 検証用テスト群
+- `bk/`: 過去の実験コードや比較用コード
+- `.github/copilot-instructions.md`: 開発方針と設計メモ
 
 ## 動作環境
 
@@ -33,19 +32,19 @@
 python -m pip install "numpy>=2.0" tqdm
 ```
 
-CUDA を利用する場合は、環境に合った CuPy パッケージもインストールしてください。
+CUDA を使う場合は、対応する CuPy も入れてください。
 
 ```powershell
 python -m pip install cupy-cuda12x
 ```
 
-既定では NumPy の CPU popcount を使用します。CUDA デバイスと CuPy が利用可能な環境で CUDA popcount を試す場合は、`--cuda` を指定してください。CUDA を利用できない場合は NumPy にフォールバックします。
+既定では NumPy の CPU popcount を使います。CuPy と CUDA デバイスが使える環境では `--cuda` を指定すると GPU 側で popcount を試せます。利用できない場合は自動的に CPU にフォールバックします。
 
 ## パフォーマンス
 
-探索用のシフトテーブルとマスクは `uint64` にビットパックされます。列数を `cols` とすると、各マスクの長さは `ceil(cols / 64)` ワードとなり、Boolean 配列と比べてメモリ使用量をおおむね 1/8 に削減します。
+探索用のシフトテーブルとマスクは `uint64` にビットパックされます。列数を `cols` とすると、各マスクの長さは `ceil(cols / 64)` ワードです。Boolean 配列と比べてメモリ使用量はおおむね 1/8 に抑えられます。
 
-`--cuda` は popcount のみを GPU で実行します。マスク転送と同期のコストにより、一般的な設定では CPU の方が高速になる場合があります。実行環境と探索規模で計測して使い分けてください。
+`--cuda` は popcount のみを GPU 上で処理します。転送と同期のコストが大きいため、一般的には CPU のほうが速い場合があります。環境と探索サイズを見て使い分けてください。
 
 ## 基本的な実行方法
 
@@ -72,7 +71,7 @@ python HLSearch.py --depth 8 --resume resume.json
 
 ## 結果出力
 
-`--output`（既定: `shift_path.txt`）には、次の形式で結果を書き出します。
+`--output`（既定: `shift_path.txt`）には次の形式で結果を書き出します。
 
 ```text
 max_count:<最終最大値>
