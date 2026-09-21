@@ -9,6 +9,7 @@
 - シフトテーブルと探索マスクを `uint64` ワードへビットパックし、AND と popcount をワード単位で処理する
 - 各枝で `max_count` 未満の候補を早期に打ち切る
 - `results` は最終最大値を持つパス数、`shifts` はその最大値パスの集合を保持する
+- `--workers` を指定すると、最上位シフトを複数プロセスへ分配し、親プロセスで結果を統合する
 - 既定設定は `SearchConfig` で管理し、`generate_primes()` で素数列を自動生成する
 - 標準実装は `HLSearch.py` で、実験的な変種は `bk/` に保管されている
 
@@ -68,6 +69,7 @@ python HLSearch.py --depth 8 --resume resume.json
 - `--checkpoint`: 途中経過を JSON 形式で保存する
 - `--resume`: 保存済み checkpoint から再開する
 - checkpoint の形式バージョンは `version: 4` のみをサポートする。古い `key=value` 形式や、ビットパック化前の JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
+- 並列探索の checkpoint は `version: 1` の別形式で、完了済み最上位枝を記録する。再開時は未完了枝を実行する
 
 ## 結果出力
 
@@ -86,6 +88,7 @@ results:<最終最大値パス数>
 - `-d, --depth`: 探索する深さ
 - `--cols`: 列数
 - `--cuda`: CuPy/CUDA による popcount を有効化
+- `--workers`: 最上位シフトを分担するプロセス数
 - `--output`: 結果出力先ファイル
 - `--mininterval`: 進捗表示の最短更新間隔（秒）
 - `--log-level`: コンソールログレベル

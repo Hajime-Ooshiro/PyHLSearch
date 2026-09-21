@@ -8,6 +8,7 @@ NumPy ベースの bitmask/shift table で高速化する実装を提供する�
 - SearchConfig: 探索設定をまとめた dataclass
 - build_base_rows(primes, cols): 各素数ごとの基底行を構築する
 - build_shift_table(primes, cols): シフト候補の packed table を生成する
+- SearchResultAggregator: 探索結果を最大値単位で集計・統合するクラス
 - State: DFS 探索の状態と結果を管理するクラス
 - parse_args(argv): CLI 引数を解析する
 
@@ -16,6 +17,7 @@ NumPy ベースの bitmask/shift table で高速化する実装を提供する�
 """
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import json
 import logging
 import logging.handlers
@@ -100,6 +102,39 @@ class SearchConfig:
                 f"postfix_update_interval={self.postfix_update_interval}"
             )
 
+
+@dataclass
+class SearchResultAggregator:
+    """探索で得た葉ノードのスコアを最大値単位で集計する。"""
+
+    max_count: int = 0
+    results: int = 0
+    max_shifts: list[list[int]] = field(default_factory=list)
+
+    def observe(self, count: int, path: Sequence[int]) -> bool:
+        """1件の探索結果を取り込み、最大値が更新されたかを返す。"""
+        if count < self.max_count:
+            return False
+        if count > self.max_count:
+            self.max_count = count
+            self.results = 1
+            self.max_shifts = [list(path)]
+            return True
+        self.results += 1
+        self.max_shifts.append(list(path))
+        return False
+
+    def merge(self, other: "SearchResultAggregator") -> None:
+        """別探索単位の集計結果を統合する。"""
+        if other.max_count > self.max_count:
+            self.max_count = other.max_count
+            self.results = other.results
+            self.max_shifts = [list(path) for path in other.max_shifts]
+        elif other.max_count == self.max_count:
+            self.results += other.results
+            self.max_shifts.extend(list(path) for path in other.max_shifts)
+
+
 cfg = SearchConfig()
 shift_path_file: str = cfg.shift_path_file
 
@@ -111,6 +146,9 @@ logger = logging.getLogger(__name__)
 # - Legacy checkpoint formats (key=value, pre-packed masks, older result layouts)
 #   are intentionally rejected because they do not round-trip the current state.
 CHECKPOINT_VERSION = 4
+PARALLEL_CHECKPOINT_VERSION = 1
+
+_PARALLEL_CONTEXT: tuple[SearchConfig, list[NDArray[np.uint64]], bool] | None = None
 
 
 def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -> str:
@@ -236,10 +274,7 @@ class State:
         "primes",
         "shift_table",
         "zero_mask",
-        "max_count",
         "shifts",
-        "max_shifts",
-        "results",
         "start_time",
         "node_count",
         "pbar",
@@ -247,9 +282,10 @@ class State:
         "checkpoint_interval",
         "_stack",
         "_cuda",
+        "_aggregator",
     )
 
-    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.uint64]], checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False) -> None:
+    def __init__(self, config: SearchConfig | Sequence[int], shift_table: list[NDArray[np.uint64]], checkpoint_path: str | os.PathLike[str] | None = None, checkpoint_interval: int = 1000, use_cuda: bool = False, progress: bool = True) -> None:
         # SearchConfig 以外(生の primes 列)が渡された場合は、まず SearchConfig に
         # 正規化してしまう。これにより以降の属性代入を両ケースで共通化できる。
         if not isinstance(config, SearchConfig):
@@ -278,10 +314,8 @@ class State:
         self.zero_mask: NDArray[np.uint64] = _pack_masks(
             np.ones(self.config.cols, dtype=bool)
         )
-        self.max_count: int = 0
+        self._aggregator = SearchResultAggregator()
         self.shifts: list[list[int]] = []
-        self.max_shifts: list[list[int]] = []
-        self.results: int = 0
         self.start_time: float = time.time()
         self.node_count: int = 0
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
@@ -294,7 +328,32 @@ class State:
             unit_scale=True,
             dynamic_ncols=True,
             mininterval=self.config.progress_mininterval,
+            disable=not progress,
         )
+
+    @property
+    def max_count(self) -> int:
+        return self._aggregator.max_count
+
+    @max_count.setter
+    def max_count(self, value: int) -> None:
+        self._aggregator.max_count = int(value)
+
+    @property
+    def results(self) -> int:
+        return self._aggregator.results
+
+    @results.setter
+    def results(self, value: int) -> None:
+        self._aggregator.results = int(value)
+
+    @property
+    def max_shifts(self) -> list[list[int]]:
+        return self._aggregator.max_shifts
+
+    @max_shifts.setter
+    def max_shifts(self, value: list[list[int]]) -> None:
+        self._aggregator.max_shifts = value
 
     @staticmethod
     def _init_cuda():
@@ -332,6 +391,13 @@ class State:
     def _update_shifts(self) -> None:
         """最大値パスを公開用の `shifts` に反映する。"""
         self.shifts = list(self.max_shifts)
+
+    def _record_leaf(self, count: int, path: Sequence[int], depth: int) -> None:
+        """探索で確定した葉ノードを集計へ渡す。"""
+        updated = self._aggregator.observe(count, path)
+        if updated:
+            logger.info(f"depth:{depth} key:{list(path)} count:{count}")
+        self._update_shifts()
 
     def _save_checkpoint(self) -> None:
         if self.checkpoint_path is None:
@@ -543,15 +609,7 @@ class State:
                     continue
 
                 if level + 1 >= depth:
-                    if count > self.max_count:
-                        self.max_count = count
-                        logger.info(f"depth:{depth} key:{list(key)} count:{count}")
-                        self.results = 1
-                        self.max_shifts = [list(key)]
-                    elif count == self.max_count:
-                        self.results += 1
-                        self.max_shifts.append(list(key))
-                    self._update_shifts()
+                    self._record_leaf(count, key, depth)
 
                     key.pop()
                     continue
@@ -562,16 +620,35 @@ class State:
             finally:
                 self.report_progress()
 
+    def search_branch(self, depth: int, first_shift: int) -> None:
+        """最上位のシフトを固定した独立探索を実行する。"""
+        if depth <= 0:
+            return
+        first_prime = self.primes[0]
+        if not 0 <= first_shift < first_prime:
+            raise ValueError(
+                f"first_shift={first_shift} は 0 以上 {first_prime} 未満である必要があります"
+            )
+
+        self.key = [first_shift]
+        self.node_count += 1
+        base_mask = self.zero_mask.copy()
+        node_mask = base_mask & self.shift_table[0][first_shift]
+        count = self._count_nonzero(node_mask)
+        if depth == 1:
+            self._record_leaf(count, self.key, depth)
+            self.key.clear()
+            self.report_progress(force=True)
+            return
+
+        self.zero_mask = node_mask
+        next_prime = self.primes[1]
+        self._stack = [[1, node_mask, next_prime - 1, next_prime]]
+        self.search(depth)
+        self.key.clear()
+
     def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
-        """`primes[:depth]` を使って深さ `depth` まで探索を実行する。
-
-        Args:
-            depth: 探索する深さ。None の場合は `config.depth` を使う。
-            resume_from: 再開用 checkpoint のパス。
-
-        Returns:
-            更新後の `State` 自身。
-        """
+        """`primes[:depth]` を使って深さ `depth` まで探索を実行する。"""
         if depth is not None and depth < 0:
             raise ValueError(f"depth は0以上である必要があります: depth={depth}")
         depth_to_use = self.config.depth if depth is None else depth
@@ -589,6 +666,130 @@ class State:
 
         return self
 
+
+@dataclass
+class ParallelSearchResult:
+    """1つの独立探索単位から親プロセスへ返す結果。"""
+
+    aggregator: SearchResultAggregator
+    node_count: int
+
+
+def _init_parallel_worker(
+    config: SearchConfig,
+    shift_table: list[NDArray[np.uint64]],
+    use_cuda: bool,
+) -> None:
+    """各 worker に設定と packed table を一度だけ配布する。"""
+    global _PARALLEL_CONTEXT
+    _PARALLEL_CONTEXT = (config, shift_table, use_cuda)
+
+
+def _run_parallel_branch(first_shift: int) -> ParallelSearchResult:
+    """worker 内で1つの最上位枝を独立 State により探索する。"""
+    if _PARALLEL_CONTEXT is None:
+        raise RuntimeError("parallel worker が初期化されていません")
+    config, shift_table, use_cuda = _PARALLEL_CONTEXT
+    state = State(config, shift_table, use_cuda=use_cuda, progress=False)
+    state.search_branch(config.depth, first_shift)
+    state.pbar.close()
+    return ParallelSearchResult(state._aggregator, state.node_count)
+
+
+def parallel_search(
+    config: SearchConfig,
+    shift_table: list[NDArray[np.uint64]],
+    workers: int,
+    use_cuda: bool = False,
+    checkpoint_path: str | os.PathLike[str] | None = None,
+    resume_from: str | os.PathLike[str] | None = None,
+) -> tuple[SearchResultAggregator, int]:
+    """最上位枝を複数プロセスで探索し、親プロセスで結果を reduce する。
+
+    並列 checkpoint は完了済み最上位枝と親プロセスの集計だけを保存する。
+    実行中の枝は保存せず、再開時にはその枝を最初からやり直す。
+    """
+    if workers <= 0:
+        raise ValueError(f"workers は正の整数である必要があります: workers={workers}")
+    if config.depth == 0:
+        return SearchResultAggregator(), 0
+
+    aggregate = SearchResultAggregator()
+    total_nodes = 0
+    checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
+    completed_shifts: set[int] = set()
+    settings = {
+        "primes": list(config.primes),
+        "depth": config.depth,
+        "cols": config.cols,
+        "traversal_order": "descending",
+        "mode": "parallel-top-level",
+    }
+    if resume_from is not None:
+        resume_path = Path(resume_from)
+        if not resume_path.exists():
+            raise FileNotFoundError(resume_path)
+        with resume_path.open("r", encoding="utf-8") as file:
+            saved = json.load(file)
+        if saved.get("version") != PARALLEL_CHECKPOINT_VERSION:
+            raise ValueError(
+                f"unsupported parallel checkpoint version: {saved.get('version')} "
+                f"(supported version: {PARALLEL_CHECKPOINT_VERSION})"
+            )
+        if saved.get("settings") != settings:
+            raise ValueError(
+                f"{resume_path} の探索設定が現在の設定と一致しません: "
+                f"保存値={saved.get('settings')!r}, 現在値={settings!r}"
+            )
+        aggregate.max_count = int(saved.get("max_count", 0))
+        aggregate.results = int(saved.get("results", 0))
+        aggregate.max_shifts = [list(path) for path in saved.get("max_shifts", [])]
+        total_nodes = int(saved.get("node_count", 0))
+        completed_shifts = {int(value) for value in saved.get("completed_shifts", [])}
+
+    def save_checkpoint() -> None:
+        if checkpoint is None:
+            return
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        saved = {
+            "version": PARALLEL_CHECKPOINT_VERSION,
+            "settings": settings,
+            "completed_shifts": sorted(completed_shifts, reverse=True),
+            "max_count": aggregate.max_count,
+            "results": aggregate.results,
+            "max_shifts": aggregate.max_shifts,
+            "node_count": total_nodes,
+        }
+        temporary = checkpoint.with_suffix(checkpoint.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as file:
+            json.dump(saved, file, ensure_ascii=False, indent=2)
+        temporary.replace(checkpoint)
+
+    first_shifts = [
+        value for value in range(config.primes[0] - 1, -1, -1)
+        if value not in completed_shifts
+    ]
+    if workers == 1:
+        _init_parallel_worker(config, shift_table, use_cuda)
+        results = map(_run_parallel_branch, first_shifts)
+        for first_shift, result in zip(first_shifts, results):
+            aggregate.merge(result.aggregator)
+            total_nodes += result.node_count
+            completed_shifts.add(first_shift)
+            save_checkpoint()
+        return aggregate, total_nodes
+
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_init_parallel_worker,
+        initargs=(config, shift_table, use_cuda),
+    ) as executor:
+        for first_shift, result in zip(first_shifts, executor.map(_run_parallel_branch, first_shifts)):
+            aggregate.merge(result.aggregator)
+            total_nodes += result.node_count
+            completed_shifts.add(first_shift)
+            save_checkpoint()
+    return aggregate, total_nodes
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """CLI 引数を解釈して探索設定を返す。
@@ -609,6 +810,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="列数(=探索対象の長さ)。")
     parser.add_argument("--cuda", action="store_true",
                         help="CuPy/CUDA を popcount に使用する(既定では CPU を使用)。")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="最上位シフトを分担するプロセス数。1 は直列探索。")
     parser.add_argument("--output", type=str, default=None,
                         help="最適シフトパスの出力先ファイル(未指定時は shift_path_depth<depth>.txt)。")
     parser.add_argument("--mininterval", type=float, default=cfg.progress_mininterval,
@@ -649,21 +852,37 @@ if __name__ == "__main__":
 
     logger.info("HLSearch 開始 (log file: %s)", LOG_PATH)
     logger.info(
-        "設定: depth=%d primes=%d cuda=%s",
+        "設定: depth=%d primes=%d cuda=%s workers=%d",
         depth,
         len(primes),
         args.cuda,
+        args.workers,
     )
 
     shift_table = build_shift_table(primes[:depth], cols)
-    state = State(
-        config,
-        shift_table,
-        checkpoint_path=args.checkpoint,
-        checkpoint_interval=max(1, min(10000, max(10, depth * 100))),
-        use_cuda=args.cuda,
-    )
-    result_state = state.run(depth, resume_from=args.resume)
+    if args.workers == 1:
+        state = State(
+            config,
+            shift_table,
+            checkpoint_path=args.checkpoint,
+            checkpoint_interval=max(1, min(10000, max(10, depth * 100))),
+            use_cuda=args.cuda,
+        )
+        result_state = state.run(depth, resume_from=args.resume)
+    else:
+        aggregate, node_count = parallel_search(
+            config,
+            shift_table,
+            workers=args.workers,
+            use_cuda=args.cuda,
+            checkpoint_path=args.checkpoint,
+            resume_from=args.resume,
+        )
+        result_state = State(config, shift_table, progress=False)
+        result_state._aggregator = aggregate
+        result_state.shifts = list(aggregate.max_shifts)
+        result_state.node_count = node_count
+        result_state.pbar.close()
 
     logger.info("最大値: %d", result_state.max_count)
     logger.info("最大値パス数: %d", result_state.results)

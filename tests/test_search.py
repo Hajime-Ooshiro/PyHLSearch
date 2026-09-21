@@ -1,7 +1,15 @@
 import numpy as np
 import pytest
 
-from HLSearch import SearchConfig, State, build_shift_table, parse_args, shift_array
+from HLSearch import (
+    SearchConfig,
+    SearchResultAggregator,
+    State,
+    build_shift_table,
+    parse_args,
+    parallel_search,
+    shift_array,
+)
 
 
 def test_parse_args_uses_cpu_by_default_and_can_enable_cuda():
@@ -12,6 +20,10 @@ def test_parse_args_uses_cpu_by_default_and_can_enable_cuda():
     assert not hasattr(default_args, "primes_count")
     assert default_args.cuda is False
     assert cuda_args.cuda is True
+
+
+def test_parse_args_accepts_worker_count():
+    assert parse_args(["--workers", "2"]).workers == 2
 
 
 def test_state_only_initializes_cuda_when_requested(monkeypatch):
@@ -97,6 +109,63 @@ def test_search_tracks_maximum_paths_without_duplicates():
     assert state.results == 1
     assert state.max_shifts == [[0]]
     assert state.shifts == [[0]]
+
+
+def test_result_aggregator_merges_independent_search_results():
+    first = SearchResultAggregator()
+    first.observe(5, [1, 2])
+    first.observe(5, [0, 2])
+
+    second = SearchResultAggregator()
+    second.observe(7, [2, 1])
+
+    first.merge(second)
+
+    assert first.max_count == 7
+    assert first.results == 1
+    assert first.max_shifts == [[2, 1]]
+
+
+def test_parallel_search_matches_serial_search():
+    primes = [2, 3, 5]
+    config = SearchConfig(primes=primes, depth=3, cols=32)
+    shift_table = build_shift_table(primes, config.cols)
+
+    serial = State(config, shift_table, progress=False)
+    serial.run()
+    aggregate, node_count = parallel_search(config, shift_table, workers=1)
+
+    assert aggregate.max_count == serial.max_count
+    assert aggregate.results == serial.results
+    assert aggregate.max_shifts == serial.max_shifts
+    assert node_count == serial.node_count
+
+
+def test_parallel_search_checkpoint_resumes_completed_branches(tmp_path):
+    primes = [2, 3, 5]
+    config = SearchConfig(primes=primes, depth=3, cols=32)
+    shift_table = build_shift_table(primes, config.cols)
+    checkpoint = tmp_path / "parallel.json"
+
+    first, first_nodes = parallel_search(
+        config,
+        shift_table,
+        workers=1,
+        checkpoint_path=checkpoint,
+    )
+    resumed, resumed_nodes = parallel_search(
+        config,
+        shift_table,
+        workers=1,
+        checkpoint_path=checkpoint,
+        resume_from=checkpoint,
+    )
+
+    assert checkpoint.exists()
+    assert resumed.max_count == first.max_count
+    assert resumed.results == first.results
+    assert resumed.max_shifts == first.max_shifts
+    assert resumed_nodes == first_nodes
 
 
 def test_search_with_zero_depth_finishes_without_exploring():
