@@ -117,6 +117,7 @@ pytest -q
 - `report_progress()` の更新頻度を `postfix_update_interval` に揃えて、進捗表示が一貫するよう修正
 
 ### 修正 (Fixed)
+
 - 各実装で不足していた `SearchConfig.__post_init__` を整備し、設定の検証が一貫するよう修正
 
 ### 追加 (Added)
@@ -130,6 +131,7 @@ pytest -q
 ### 変更 (Changed)
 
 - checkpoint を JSON 形式へ変更し、再開の信頼性を向上
+
 ### 修正 (Fixed)
 
 - 大きな `cols` で checkpoint のビットマスクが overflow して再開時に壊れる問題を修正
@@ -170,10 +172,10 @@ pytest -q
 - 事前計算テーブルを活用する設計に整理
 
 </details>
+
 <details>
 
 <summary><b>v1.0.2</b> (2026-08-27)</summary>
-
 ### 追加 (Added)
 
 - 進捗表示を追加
@@ -182,9 +184,7 @@ pytest -q
 </details>
 
 <details>
-
 <summary><b>v1.0.1</b> (2026-08-23)</summary>
-
 ### 変更 (Changed)
 
 - 再帰探索から反復型探索へ整理

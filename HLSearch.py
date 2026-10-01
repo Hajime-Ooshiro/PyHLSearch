@@ -72,6 +72,7 @@ class SearchConfig:
     """
     primes: list[int] = field(default_factory=lambda: generate_primes(MAX_PRIME))
     depth: int = 8
+    target: int = 447
     cols: int = 3159
     progress_mininterval: float = 1.0
     postfix_update_interval: int = 10000
@@ -96,6 +97,8 @@ class SearchConfig:
             raise ValueError(
                 f"depth={self.depth} が primes の要素数({len(self.primes)})を超えています"
             )
+        if self.depth > self.target:
+            raise ValueError(f"depth={self.depth} が target={self.target} を超えています")
         if self.postfix_update_interval <= 0:
             raise ValueError(
                 f"postfix_update_interval は正の整数である必要があります: "
