@@ -36,7 +36,7 @@ WORD_BITS = 64
 MIN_PRIME = 2
 MAX_PRIME = 1579
 
-
+# --- 素数生成 ---
 def generate_primes(limit: int) -> list[int]:
     """limit 以下の素数を昇順で返す。
 
@@ -57,6 +57,7 @@ def generate_primes(limit: int) -> list[int]:
     return [n for n in range(MIN_PRIME, limit + 1) if sieve[n]]
 
 
+# --- 探索設定 ---
 @dataclass(frozen=True)
 class SearchConfig:
     """探索処理に必要な設定をまとめた構成体。
@@ -105,7 +106,7 @@ class SearchConfig:
                 f"postfix_update_interval={self.postfix_update_interval}"
             )
 
-
+# --- 探索結果集計 ---
 @dataclass
 class SearchResultAggregator:
     """探索で得た葉ノードのスコアを最大値単位で集計する。"""
@@ -137,22 +138,12 @@ class SearchResultAggregator:
             self.results += other.results
             self.max_shifts.extend(list(path) for path in other.max_shifts)
 
-
+# --- 設定とログ ---
 cfg = SearchConfig()
 shift_path_file: str = cfg.shift_path_file
 
 # --- logging設定 ---
 logger = logging.getLogger(__name__)
-
-# Checkpoint serialization contract:
-# - version 4 is the only supported on-disk format.
-# - Legacy checkpoint formats (key=value, pre-packed masks, older result layouts)
-#   are intentionally rejected because they do not round-trip the current state.
-CHECKPOINT_VERSION = 4
-PARALLEL_CHECKPOINT_VERSION = 1
-
-_PARALLEL_CONTEXT: tuple[SearchConfig, list[NDArray[np.uint64]], bool] | None = None
-
 
 def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -> str:
     """コンソールとファイルの両方にログを出力するよう設定する。"""
@@ -187,6 +178,7 @@ def setup_logging(base_dir: str | os.PathLike[str], console_level: str="INFO") -
 # 2,3,5,7,11,13,...,1579 の素数リスト
 PRIMES: list[int] = generate_primes(MAX_PRIME)
 
+# --- 配列シフト ---
 def shift_array(arr: NDArray[np.bool_], k: int) -> NDArray[np.bool_]:
     """
     配列を右にk個シフトする(numpy版)。先頭k要素は0埋めし、末尾のk要素は捨てる。
@@ -201,7 +193,7 @@ def shift_array(arr: NDArray[np.bool_], k: int) -> NDArray[np.bool_]:
     result[k:] = arr[: n - k]
     return result
  
-
+# --- 基底行とシフトテーブルの構築 ---
 def build_base_rows(primes: Sequence[int], cols: int = cfg.cols) -> NDArray[np.bool_]:
     """指定した素数リストから各階層の基底行を生成する。
 
@@ -219,7 +211,7 @@ def build_base_rows(primes: Sequence[int], cols: int = cfg.cols) -> NDArray[np.b
     idx = np.arange(1, cols + 1)
     return np.array([(idx % p == 1) for p in primes])
 
-
+# --- マスクのパック ---
 def _pack_masks(masks: NDArray[np.bool_]) -> NDArray[np.uint64]:
     """Boolean マスクを列方向に `uint64` ワードへパックする。"""
     packed_bytes = np.packbits(masks, axis=-1, bitorder="little")
@@ -230,11 +222,11 @@ def _pack_masks(masks: NDArray[np.bool_]) -> NDArray[np.uint64]:
         packed_bytes = np.pad(packed_bytes, pad_width)
     return np.ascontiguousarray(packed_bytes).view(np.uint64)
 
-
+# --- パック幅計算 ---
 def _packed_width(cols: int) -> int:
     return (cols + WORD_BITS - 1) // WORD_BITS
 
-
+# -- シフト候補テーブルの構築 ---
 def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArray[np.uint64]]:
     """各レベルごとのシフト候補テーブルを事前生成する。
 
@@ -259,6 +251,16 @@ def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArr
         shift_table.append(_pack_masks(shifted_complement))
     return shift_table
 
+# Checkpoint serialization contract:
+# - version 4 is the only supported on-disk format.
+# - Legacy checkpoint formats (key=value, pre-packed masks, older result layouts)
+#   are intentionally rejected because they do not round-trip the current state.
+CHECKPOINT_VERSION = 4
+PARALLEL_CHECKPOINT_VERSION = 1
+
+_PARALLEL_CONTEXT: tuple[SearchConfig, list[NDArray[np.uint64]], bool] | None = None
+
+# --- 探索状態管理 ---
 class State:
     """探索処理の状態を保持し、反復 DFS を実行する。
 
@@ -275,6 +277,7 @@ class State:
         "config",
         "key",
         "primes",
+        "target",
         "shift_table",
         "zero_mask",
         "shifts",
@@ -299,6 +302,7 @@ class State:
             )
         self.config = config
         primes = config.primes
+        self.target = config.target
         if len(shift_table) < config.depth:
             raise ValueError(
                 f"shift_table の階層数({len(shift_table)})が depth({config.depth})未満です"
@@ -607,7 +611,10 @@ class State:
                 node_mask = base_mask & row_complement
                 count = self._count_nonzero(node_mask)
 
-                if count < self.max_count:
+                # if count < self.max_count:
+                #     key.pop()
+                #     continue
+                if count < self.target:
                     key.pop()
                     continue
 
@@ -650,26 +657,35 @@ class State:
         self.search(depth)
         self.key.clear()
 
-    def run(self, depth: int | None = None, resume_from: str | os.PathLike[str] | None = None) -> "State":
-        """`primes[:depth]` を使って深さ `depth` まで探索を実行する。"""
+    def run(self, depth: int | None = None) -> "State":
+        """`primes[:depth]` を使って深さ `depth` まで探索を実行する。
+
+        `checkpoint_path` が既存ファイルを指す場合は、その checkpoint から
+        自動的に再開する。
+        """
         if depth is not None and depth < 0:
             raise ValueError(f"depth は0以上である必要があります: depth={depth}")
         depth_to_use = self.config.depth if depth is None else depth
         if depth_to_use > len(self.primes):
             raise ValueError(f"depth={depth_to_use} が使用可能な素数の個数({len(self.primes)})を超えています")
-        if resume_from is not None:
-            self._load_checkpoint(resume_from)
+        if self.checkpoint_path is not None and self.checkpoint_path.exists():
+            self._load_checkpoint(self.checkpoint_path)
+        completed = False
         try:
             self.search(depth_to_use)
             self.report_progress(force=True)
+            completed = True
         finally:
             self.pbar.close()
-            if self.checkpoint_path is not None:
+            if completed:
+                if self.checkpoint_path is not None:
+                    self.checkpoint_path.unlink(missing_ok=True)
+            elif self.checkpoint_path is not None:
                 self._save_checkpoint()
 
         return self
 
-
+# --- 並列探索 ---
 @dataclass
 class ParallelSearchResult:
     """1つの独立探索単位から親プロセスへ返す結果。"""
@@ -677,7 +693,7 @@ class ParallelSearchResult:
     aggregator: SearchResultAggregator
     node_count: int
 
-
+# --- 並列探索のワーカー初期化 ---
 def _init_parallel_worker(
     config: SearchConfig,
     shift_table: list[NDArray[np.uint64]],
@@ -687,7 +703,7 @@ def _init_parallel_worker(
     global _PARALLEL_CONTEXT
     _PARALLEL_CONTEXT = (config, shift_table, use_cuda)
 
-
+# --- 並列探索のワーカー実行 ---
 def _run_parallel_branch(first_shift: int) -> ParallelSearchResult:
     """worker 内で1つの最上位枝を独立 State により探索する。"""
     if _PARALLEL_CONTEXT is None:
@@ -698,14 +714,13 @@ def _run_parallel_branch(first_shift: int) -> ParallelSearchResult:
     state.pbar.close()
     return ParallelSearchResult(state._aggregator, state.node_count)
 
-
+# --- 並列探索の親プロセス ---
 def parallel_search(
     config: SearchConfig,
     shift_table: list[NDArray[np.uint64]],
     workers: int,
     use_cuda: bool = False,
     checkpoint_path: str | os.PathLike[str] | None = None,
-    resume_from: str | os.PathLike[str] | None = None,
 ) -> tuple[SearchResultAggregator, int]:
     """最上位枝を複数プロセスで探索し、親プロセスで結果を reduce する。
 
@@ -714,12 +729,14 @@ def parallel_search(
     """
     if workers <= 0:
         raise ValueError(f"workers は正の整数である必要があります: workers={workers}")
+    checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
     if config.depth == 0:
+        if checkpoint is not None:
+            checkpoint.unlink(missing_ok=True)
         return SearchResultAggregator(), 0
 
     aggregate = SearchResultAggregator()
     total_nodes = 0
-    checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
     completed_shifts: set[int] = set()
     settings = {
         "primes": list(config.primes),
@@ -728,11 +745,8 @@ def parallel_search(
         "traversal_order": "descending",
         "mode": "parallel-top-level",
     }
-    if resume_from is not None:
-        resume_path = Path(resume_from)
-        if not resume_path.exists():
-            raise FileNotFoundError(resume_path)
-        with resume_path.open("r", encoding="utf-8") as file:
+    if checkpoint is not None and checkpoint.exists():
+        with checkpoint.open("r", encoding="utf-8") as file:
             saved = json.load(file)
         if saved.get("version") != PARALLEL_CHECKPOINT_VERSION:
             raise ValueError(
@@ -741,7 +755,7 @@ def parallel_search(
             )
         if saved.get("settings") != settings:
             raise ValueError(
-                f"{resume_path} の探索設定が現在の設定と一致しません: "
+                f"{checkpoint} の探索設定が現在の設定と一致しません: "
                 f"保存値={saved.get('settings')!r}, 現在値={settings!r}"
             )
         aggregate.max_count = int(saved.get("max_count", 0))
@@ -780,6 +794,8 @@ def parallel_search(
             total_nodes += result.node_count
             completed_shifts.add(first_shift)
             save_checkpoint()
+        if checkpoint is not None:
+            checkpoint.unlink(missing_ok=True)
         return aggregate, total_nodes
 
     with ProcessPoolExecutor(
@@ -792,8 +808,11 @@ def parallel_search(
             total_nodes += result.node_count
             completed_shifts.add(first_shift)
             save_checkpoint()
+    if checkpoint is not None:
+        checkpoint.unlink(missing_ok=True)
     return aggregate, total_nodes
 
+# --- コマンドライン引数の解釈 ---
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """CLI 引数を解釈して探索設定を返す。
 
@@ -822,12 +841,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO",
                         help="コンソールに出すログレベル(ログファイルは常にDEBUG)。")
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="途中経過をJSON形式で保存するパス。再開時は --resume を使う。")
-    parser.add_argument("--resume", type=str, default=None,
-                        help="保存済み checkpoint から探索を再開する。")
+                        help="途中経過をJSON形式で保存するパス。既存なら自動的に再開し、完了時に削除する。")
     return parser.parse_args(argv)
 
-
+# --- メイン ---
 if __name__ == "__main__":
     script_name = os.path.basename(sys.argv[0]).lower()
     argv = sys.argv[1:] if script_name not in {"pytest", "py.test"} else []
@@ -871,7 +888,7 @@ if __name__ == "__main__":
             checkpoint_interval=max(1, min(10000, max(10, depth * 100))),
             use_cuda=args.cuda,
         )
-        result_state = state.run(depth, resume_from=args.resume)
+        result_state = state.run(depth)
     else:
         aggregate, node_count = parallel_search(
             config,
@@ -879,7 +896,6 @@ if __name__ == "__main__":
             workers=args.workers,
             use_cuda=args.cuda,
             checkpoint_path=args.checkpoint,
-            resume_from=args.resume,
         )
         result_state = State(config, shift_table, progress=False)
         result_state._aggregator = aggregate

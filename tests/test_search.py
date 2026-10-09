@@ -1,6 +1,9 @@
+import json
+
 import numpy as np
 import pytest
 
+import HLSearch
 from HLSearch import (
     SearchConfig,
     SearchResultAggregator,
@@ -24,6 +27,11 @@ def test_parse_args_uses_cpu_by_default_and_can_enable_cuda():
 
 def test_parse_args_accepts_worker_count():
     assert parse_args(["--workers", "2"]).workers == 2
+
+
+def test_parse_args_rejects_removed_resume_option():
+    with pytest.raises(SystemExit):
+        parse_args(["--resume", "checkpoint.json"])
 
 
 def test_state_only_initializes_cuda_when_requested(monkeypatch):
@@ -141,31 +149,65 @@ def test_parallel_search_matches_serial_search():
     assert node_count == serial.node_count
 
 
-def test_parallel_search_checkpoint_resumes_completed_branches(tmp_path):
+def test_state_automatically_resumes_existing_checkpoint_and_removes_it(tmp_path):
+    primes = [2, 3, 5]
+    config = SearchConfig(primes=primes, depth=3, cols=32)
+    shift_table = build_shift_table(primes, config.cols)
+    baseline = State(config, shift_table, progress=False).run()
+    checkpoint = tmp_path / "serial.json"
+
+    interrupted = State(config, shift_table, checkpoint_path=checkpoint, progress=False)
+    interrupted.node_count = 11
+    interrupted._save_checkpoint()
+
+    resumed = State(config, shift_table, checkpoint_path=checkpoint, progress=False).run()
+
+    assert not checkpoint.exists()
+    assert resumed.node_count == baseline.node_count + 11
+    assert resumed.max_count == baseline.max_count
+    assert resumed.results == baseline.results
+    assert resumed.max_shifts == baseline.max_shifts
+
+
+def test_parallel_search_automatically_resumes_and_removes_checkpoint(tmp_path):
     primes = [2, 3, 5]
     config = SearchConfig(primes=primes, depth=3, cols=32)
     shift_table = build_shift_table(primes, config.cols)
     checkpoint = tmp_path / "parallel.json"
-
-    first, first_nodes = parallel_search(
-        config,
-        shift_table,
-        workers=1,
-        checkpoint_path=checkpoint,
+    baseline, baseline_nodes = parallel_search(config, shift_table, workers=1)
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "version": HLSearch.PARALLEL_CHECKPOINT_VERSION,
+                "settings": {
+                    "primes": primes,
+                    "depth": config.depth,
+                    "cols": config.cols,
+                    "traversal_order": "descending",
+                    "mode": "parallel-top-level",
+                },
+                "completed_shifts": [],
+                "max_count": 0,
+                "results": 0,
+                "max_shifts": [],
+                "node_count": 11,
+            }
+        ),
+        encoding="utf-8",
     )
+
     resumed, resumed_nodes = parallel_search(
         config,
         shift_table,
         workers=1,
         checkpoint_path=checkpoint,
-        resume_from=checkpoint,
     )
 
-    assert checkpoint.exists()
-    assert resumed.max_count == first.max_count
-    assert resumed.results == first.results
-    assert resumed.max_shifts == first.max_shifts
-    assert resumed_nodes == first_nodes
+    assert not checkpoint.exists()
+    assert resumed.max_count == baseline.max_count
+    assert resumed.results == baseline.results
+    assert resumed.max_shifts == baseline.max_shifts
+    assert resumed_nodes == baseline_nodes + 11
 
 
 def test_search_with_zero_depth_finishes_without_exploring():

@@ -63,11 +63,9 @@ python HLSearch.py --depth 3 --cols 50 --output shift_path.txt
 
 ```powershell
 python HLSearch.py --depth 8 --checkpoint resume.json
-python HLSearch.py --depth 8 --resume resume.json
 ```
 
-- `--checkpoint`: 途中経過を JSON 形式で保存する
-- `--resume`: 保存済み checkpoint から再開する
+- `--checkpoint`: 途中経過を JSON 形式で保存する。指定したファイルが既に存在する場合は自動的に再開し、探索が正常に完了すると削除する
 - checkpoint の形式バージョンは `version: 4` のみをサポートする。古い `key=value` 形式や、ビットパック化前の JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
 - 並列探索の checkpoint は `version: 1` の別形式で、完了済み最上位枝を記録する。再開時は未完了枝を実行する
 
@@ -92,8 +90,7 @@ results:<最終最大値パス数>
 - `--output`: 結果出力先ファイル
 - `--mininterval`: 進捗表示の最短更新間隔（秒）
 - `--log-level`: コンソールログレベル
-- `--checkpoint`: 定期保存する checkpoint ファイル
-- `--resume`: checkpoint から再開
+- `--checkpoint`: 定期保存する checkpoint ファイル（既存なら自動再開、完了時に削除）
 
 ```powershell
 python HLSearch.py --depth 4 --cols 500 --output shift_path.txt
