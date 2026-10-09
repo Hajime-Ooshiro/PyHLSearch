@@ -66,8 +66,8 @@ python HLSearch.py --depth 8 --checkpoint resume.json
 ```
 
 - `--checkpoint`: 途中経過を JSON 形式で保存する。指定したファイルが既に存在する場合は自動的に再開し、探索が正常に完了すると削除する
-- checkpoint の形式バージョンは `version: 4` のみをサポートする。古い `key=value` 形式や、ビットパック化前の JSON checkpoint は読み込めないため、現在の設定で新規に保存したファイルを使うこと
-- 並列探索の checkpoint は `version: 1` の別形式で、完了済み最上位枝を記録する。再開時は未完了枝を実行する
+- checkpoint の形式バージョンは `version: 5` のみをサポートする。素数列は保存せず、固定長の SHA-256 フィンガープリントで探索設定を照合する。古い形式の checkpoint は現在の設定で新規に保存し直すこと
+- 並列探索の checkpoint は `version: 2` の別形式で、完了済み最上位枝を記録する。再開時は未完了枝を実行する
 
 ## 結果出力
 

@@ -180,7 +180,7 @@ def test_parallel_search_automatically_resumes_and_removes_checkpoint(tmp_path):
             {
                 "version": HLSearch.PARALLEL_CHECKPOINT_VERSION,
                 "settings": {
-                    "primes": primes,
+                    "prime_fingerprint": HLSearch._prime_fingerprint(primes),
                     "depth": config.depth,
                     "cols": config.cols,
                     "traversal_order": "descending",
@@ -254,6 +254,18 @@ def test_state_rejects_checkpoint_with_different_settings(tmp_path):
 
     with pytest.raises(ValueError, match="探索設定"):
         changed_state._load_checkpoint(path)
+
+
+def test_checkpoint_uses_prime_fingerprint_instead_of_prime_list(tmp_path):
+    path = tmp_path / "state.json"
+    config = SearchConfig(primes=[2, 3, 5], depth=3, cols=8)
+    state = State(config, build_shift_table(config.primes, config.cols), checkpoint_path=path)
+
+    state._save_checkpoint()
+
+    settings = json.loads(path.read_text(encoding="utf-8"))["settings"]
+    assert "primes" not in settings
+    assert settings["prime_fingerprint"] == HLSearch._prime_fingerprint(config.primes)
 
 
 def test_count_nonzero_uses_numpy_by_default():

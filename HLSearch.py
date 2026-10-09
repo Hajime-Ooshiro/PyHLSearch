@@ -18,6 +18,7 @@ NumPy ベースの bitmask/shift table で高速化する実装を提供する�
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -252,13 +253,20 @@ def build_shift_table(primes: Sequence[int], cols: int = cfg.cols) -> list[NDArr
     return shift_table
 
 # Checkpoint serialization contract:
-# - version 4 is the only supported on-disk format.
+# - version 5 is the only supported on-disk format.
 # - Legacy checkpoint formats (key=value, pre-packed masks, older result layouts)
 #   are intentionally rejected because they do not round-trip the current state.
-CHECKPOINT_VERSION = 4
-PARALLEL_CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 5
+PARALLEL_CHECKPOINT_VERSION = 2
 
 _PARALLEL_CONTEXT: tuple[SearchConfig, list[NDArray[np.uint64]], bool] | None = None
+
+
+def _prime_fingerprint(primes: Sequence[int]) -> str:
+    """素数列の完全性確認用の固定長 SHA-256 フィンガープリントを返す。"""
+    values = np.asarray(primes, dtype="<u8")
+    return hashlib.sha256(values.tobytes()).hexdigest()
+
 
 # --- 探索状態管理 ---
 class State:
@@ -424,7 +432,7 @@ class State:
         saved = {
             "version": CHECKPOINT_VERSION,
             "settings": {
-                "primes": list(self.primes),
+                "prime_fingerprint": _prime_fingerprint(self.primes),
                 "depth": self.config.depth,
                 "cols": self.config.cols,
                 "traversal_order": "descending",
@@ -473,7 +481,7 @@ class State:
                 f"(supported version: {CHECKPOINT_VERSION})"
             )
         expected_settings = {
-            "primes": list(self.primes),
+            "prime_fingerprint": _prime_fingerprint(self.primes),
             "depth": self.config.depth,
             "cols": self.config.cols,
             "traversal_order": "descending",
@@ -739,7 +747,7 @@ def parallel_search(
     total_nodes = 0
     completed_shifts: set[int] = set()
     settings = {
-        "primes": list(config.primes),
+        "prime_fingerprint": _prime_fingerprint(config.primes),
         "depth": config.depth,
         "cols": config.cols,
         "traversal_order": "descending",
