@@ -512,7 +512,7 @@ class State:
             for entry in raw_stack
         ]
 
-    def report_progress(self, force: bool = False) -> None:
+    def report_progress(self, prev_nodes: int | None = None, force: bool = False) -> None:
         """
         tqdmの進捗バーを更新する(ログファイルには出さない)。
 
@@ -521,8 +521,12 @@ class State:
         ときは set_postfix に refresh=True を渡し、間引かずに必ず再描画する
         (探索開始・終了時など)。
         """
-        if self.node_count % self.config.postfix_update_interval == 0:
-            self.pbar.update(self.config.postfix_update_interval)
+        if prev_nodes is None:
+            prev_nodes = self.node_count - 1
+        interval = self.config.postfix_update_interval
+        crossed = self.node_count // interval - prev_nodes // interval
+        if crossed > 0:
+            self.pbar.update(interval * crossed)
             self.pbar.set_postfix(
                 best=self.max_count,
                 results=self.results,
@@ -530,7 +534,10 @@ class State:
                 key=list(self.key),
                 refresh=force,
             )
-        if self.checkpoint_path is not None and self.node_count % self.checkpoint_interval == 0:
+        if (
+            self.checkpoint_path is not None
+            and self.node_count // self.checkpoint_interval > prev_nodes // self.checkpoint_interval
+        ):
             self._save_checkpoint()
 
     def search(self, depth: int) -> None:
@@ -583,10 +590,20 @@ class State:
         if not stack:
             stack.append([0, self.zero_mask.copy(), self.primes[0] - 1, self.primes[0]])
 
+        # フレームごとの生存候補(降順のシフト値, 各カウント, 現在位置)。
+        # 階層内の全シフトのカウントを1回のNumPy演算でまとめて求め、
+        # target 未満の枝は Python ループに入る前に一括で枝刈りする。
+        # チェックポイントには保存せず、必要になった時点で next_idx から再構築する。
+        aux: dict[int, list] = {}
+        target = self.target
+        table = self.shift_table
+
         while stack:
-            frame = stack[-1]
+            pos = len(stack) - 1
+            frame = stack[pos]
             level, base_mask, next_idx, next_p = frame
             if next_idx < 0:
+                aux.pop(pos, None)
                 finished_base_mask = stack.pop()[1]
                 if stack:
                     key.pop()
@@ -595,48 +612,49 @@ class State:
                     self.zero_mask = finished_base_mask  # 最上位まで戻り切った
                 continue
 
-            i = next_idx
-            frame[2] = next_idx - 1  # 同じフレームをその場で更新(コピー不要)
+            entry = aux.get(pos)
+            if entry is None:
+                counts = self._count_rows(base_mask, table[level])
+                survivors = np.flatnonzero(counts[: next_idx + 1] >= target)[::-1]
+                entry = [survivors.tolist(), counts[survivors].tolist(), 0]
+                aux[pos] = entry
+            survivor_idx, survivor_counts, ptr = entry
 
-            key.append(i)
-            self.node_count += 1
+            prev_nodes = self.node_count
+            if ptr >= len(survivor_idx):
+                # 残りの枝はすべて枝刈り対象
+                self.node_count += next_idx + 1
+                frame[2] = -1
+                self.report_progress(prev_nodes)
+                continue
 
-            # report_progress()(チェックポイント保存を含む)は、
-            # key と stack の対応関係が「len(key) == len(stack) - 1」に
-            # 揃っているタイミングでしか呼んではいけない。
-            # 枝刈り/葉ノード判定/子階層プッシュのどの分岐を取るかが
-            # 確定する前(= key.append 直後)に呼んでしまうと、
-            # 「i を試している最中」という中途半端な状態のまま
-            # チェックポイントに保存されてしまい、再開時に stack 側の
-            # next_idx だけが1つ先に進んだ不整合な状態から再開してしまう
-            # (key が本来ポップされるべきだったエントリを残したまま
-            # 際限なく伸び続けるバグになる)。
-            # そのため、分岐の結果が確定した直後(continue する直前、
-            # または子階層をpushした直後)に必ず1回だけ呼ぶよう
-            # try/finally で保証する。
-            try:
-                row_complement = self.shift_table[level][i]  # ~row_nonzero(NOT演算済み、事前作成済み)
-                node_mask = base_mask & row_complement
-                count = self._count_nonzero(node_mask)
+            i = survivor_idx[ptr]
+            count = survivor_counts[ptr]
+            entry[2] = ptr + 1
+            self.node_count += next_idx - i + 1  # 枝刈りされた分 + この枝
+            frame[2] = i - 1
 
-                # if count < self.max_count:
-                #     key.pop()
-                #     continue
-                if count < self.target:
-                    key.pop()
-                    continue
-
-                if level + 1 >= depth:
-                    self._record_leaf(count, key, depth)
-
-                    key.pop()
-                    continue
-
+            # report_progress()(チェックポイント保存を含む)は
+            # 「len(key) == len(stack) - 1」が成り立つ状態で呼ぶ必要があるため、
+            # 葉の記録・pop、または子階層のpush が済んだ後に呼ぶ。
+            if level + 1 >= depth:
+                key.append(i)
+                self._record_leaf(count, key, depth)
+                key.pop()
+            else:
+                node_mask = base_mask & table[level][i]
+                key.append(i)
                 self.zero_mask = node_mask
                 next_p_child = self.primes[level + 1]
                 stack.append([level + 1, node_mask, next_p_child - 1, next_p_child])
-            finally:
-                self.report_progress()
+            self.report_progress(prev_nodes)
+
+    def _count_rows(self, mask: NDArray[np.uint64], rows: NDArray[np.uint64]) -> NDArray[np.int64]:
+        """`mask & rows[i]` の立っているビット数を全 i についてまとめて数える。"""
+        if self._cuda is None:
+            return np.bitwise_count(rows & mask).sum(axis=1, dtype=np.int64)
+        device = self._cuda.asarray(rows & mask).view(self._cuda.uint8)
+        return self._cuda.unpackbits(device, axis=1).sum(axis=1).get().astype(np.int64)
 
     def search_branch(self, depth: int, first_shift: int) -> None:
         """最上位のシフトを固定した独立探索を実行する。"""
