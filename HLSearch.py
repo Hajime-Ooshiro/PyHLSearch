@@ -126,7 +126,8 @@ class SearchResultAggregator:
             self.max_shifts = [list(path)]
             return True
         self.results += 1
-        self.max_shifts.append(list(path))
+        if self.results <= 500:
+            self.max_shifts.append(list(path))
         return False
 
     def merge(self, other: "SearchResultAggregator") -> None:
@@ -137,7 +138,8 @@ class SearchResultAggregator:
             self.max_shifts = [list(path) for path in other.max_shifts]
         elif other.max_count == self.max_count:
             self.results += other.results
-            self.max_shifts.extend(list(path) for path in other.max_shifts)
+            if self.results <= 500:
+                self.max_shifts.extend(list(path) for path in other.max_shifts)
 
 # --- 設定とログ ---
 cfg = SearchConfig()
@@ -591,8 +593,7 @@ class State:
             stack.append([0, self.zero_mask.copy(), self.primes[0] - 1, self.primes[0]])
 
         # フレームごとの生存候補(降順のシフト値, 各カウント, 現在位置)。
-        # 階層内の全シフトのカウントを1回のNumPy演算でまとめて求め、
-        # target 未満の枝は Python ループに入る前に一括で枝刈りする。
+        # 階層内の全シフトのカウントを1回のNumPy演算でまとめて求める。
         # チェックポイントには保存せず、必要になった時点で next_idx から再構築する。
         aux: dict[int, list] = {}
         target = self.target
@@ -615,7 +616,7 @@ class State:
             entry = aux.get(pos)
             if entry is None:
                 counts = self._count_rows(base_mask, table[level])
-                survivors = np.flatnonzero(counts[: next_idx + 1] >= target)[::-1]
+                survivors = np.flatnonzero(counts[: next_idx + 1])[::-1]
                 entry = [survivors.tolist(), counts[survivors].tolist(), 0]
                 aux[pos] = entry
             survivor_idx, survivor_counts, ptr = entry
