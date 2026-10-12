@@ -748,11 +748,15 @@ def parallel_search(
     workers: int,
     use_cuda: bool = False,
     checkpoint_path: str | os.PathLike[str] | None = None,
+    progress: bool = True,
 ) -> tuple[SearchResultAggregator, int]:
     """最上位枝を複数プロセスで探索し、親プロセスで結果を reduce する。
 
     並列 checkpoint は完了済み最上位枝と親プロセスの集計だけを保存する。
     実行中の枝は保存せず、再開時にはその枝を最初からやり直す。
+
+    進捗は「完了した最上位枝の数 / 最上位素数 p」を tqdm で表示する。
+    checkpoint から再開した場合は、完了済みの枝数から表示を始める。
     """
     if workers <= 0:
         raise ValueError(f"workers は正の整数である必要があります: workers={workers}")
@@ -813,28 +817,56 @@ def parallel_search(
         value for value in range(config.primes[0] - 1, -1, -1)
         if value not in completed_shifts
     ]
-    if workers == 1:
-        _init_parallel_worker(config, shift_table, use_cuda)
-        results = map(_run_parallel_branch, first_shifts)
-        for first_shift, result in zip(first_shifts, results):
-            aggregate.merge(result.aggregator)
-            total_nodes += result.node_count
-            completed_shifts.add(first_shift)
-            save_checkpoint()
-        if checkpoint is not None:
-            checkpoint.unlink(missing_ok=True)
-        return aggregate, total_nodes
 
-    with ProcessPoolExecutor(
-        max_workers=workers,
-        initializer=_init_parallel_worker,
-        initargs=(config, shift_table, use_cuda),
-    ) as executor:
-        for first_shift, result in zip(first_shifts, executor.map(_run_parallel_branch, first_shifts)):
-            aggregate.merge(result.aggregator)
-            total_nodes += result.node_count
-            completed_shifts.add(first_shift)
-            save_checkpoint()
+    pbar = tqdm(
+        total=config.primes[0],
+        initial=len(completed_shifts),
+        desc="search_parallel",
+        unit="branch",
+        dynamic_ncols=True,
+        mininterval=config.progress_mininterval,
+        disable=not progress,
+    )
+
+    def update_postfix() -> None:
+        pbar.set_postfix(
+            best=aggregate.max_count,
+            results=aggregate.results,
+            nodes=total_nodes,
+            refresh=False,
+        )
+
+    def absorb(first_shift: int, result: ParallelSearchResult) -> None:
+        nonlocal total_nodes
+        aggregate.merge(result.aggregator)
+        total_nodes += result.node_count
+        completed_shifts.add(first_shift)
+        save_checkpoint()
+        update_postfix()
+
+    try:
+        update_postfix()
+        if workers == 1:
+            _init_parallel_worker(config, shift_table, use_cuda)
+            for first_shift in first_shifts:
+                absorb(first_shift, _run_parallel_branch(first_shift))
+                pbar.update(1)
+        else:
+            with ProcessPoolExecutor(
+                max_workers=workers,
+                initializer=_init_parallel_worker,
+                initargs=(config, shift_table, use_cuda),
+            ) as executor:
+                futures = [executor.submit(_run_parallel_branch, v) for v in first_shifts]
+                # 進捗バーは「完了した順」に進める(先頭枝が遅くても止まらない)。
+                # 集計(merge)は従来どおり first_shifts の順に行い、結果の順序を決定的に保つ。
+                for future in futures:
+                    future.add_done_callback(lambda _f: pbar.update(1))
+                for first_shift, future in zip(first_shifts, futures):
+                    absorb(first_shift, future.result())
+    finally:
+        pbar.close()
+
     if checkpoint is not None:
         checkpoint.unlink(missing_ok=True)
     return aggregate, total_nodes
